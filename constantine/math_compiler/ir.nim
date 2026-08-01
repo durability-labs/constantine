@@ -920,7 +920,8 @@ macro llvmFor*(asy: untyped, iter: untyped, start, stop, isCountup: typed, body:
     llvmForImpl(`asy`, `iter`, `label`, `start`, `stop`, `isCountup`, `body`)
 
 template llvmFor*(asy: untyped, iter: untyped, start, stop: typed, body: untyped): untyped {.dirty.} =
-  ## Start and stop must be Nim values
+  ## Start and stop must be Nim values.
+  ## Stop is included.
   block:
     let isCountup = start < stop
     asy.llvmFor iter, start, stop, isCountup:
@@ -928,12 +929,14 @@ template llvmFor*(asy: untyped, iter: untyped, start, stop: typed, body: untyped
 
 template llvmForCountup*(asy: untyped, iter: untyped, start, stop: typed, body: untyped): untyped  {.dirty.} =
   ## Start and stop can either be Nim or LLVM values
+  ## Stop is included.
   block:
     asy.llvmFor iter, start, stop, true:
       body
 
 template llvmForCountdown*(asy: untyped, iter: untyped, start, stop: typed, body: untyped): untyped  {.dirty.} =
   ## Start and stop can either be Nim or LLVM values
+  ## Stop is included.
   block:
     asy.llvmFor iter, start, stop, false:
       body
@@ -947,27 +950,27 @@ template declNumberOps*(asy: Assembler_LLVM, fd: FieldDescriptor): untyped =
   template genLhsRhsVariants(name, fn: untyped): untyped =
     ## Generates variants for mix of Nim integer + ValueRef and
     ## pure ValueRef
-    type T = int | uint32 | uint64
+    type T {.used.} = int | uint32 | uint64
     type U = ValueRef | MutableValue | ConstantValue
     type X = MutableValue | ConstantValue
 
     let I = fd.wordTy
 
-    template name(lhs, rhs: ValueRef): untyped =
+    template name(lhs, rhs: ValueRef): untyped {.used.} =
       if $getTypeOf(lhs) != $getTypeOf(rhs):
         raise newException(ValueError, "Inputs do not have matching types. LHS = " & $getTypeOf(lhs) & ", RHS = " & $getTypeOf(rhs))
       elif getTypeOf(lhs).isPointerType():
         raise newException(ValueError, "Inputs must not be pointer types.")
       asy.br.fn(lhs, rhs)
-    template name(lhs: SomeInteger, rhs: U): untyped =
+    template name(lhs: SomeInteger, rhs: U): untyped {.used.} =
       block:
         let lhsV = constInt(I, lhs)
         asy.br.fn(lhsV, getValueRef rhs)
-    template name(lhs: U, rhs: SomeInteger): untyped =
+    template name(lhs: U, rhs: SomeInteger): untyped {.used.} =
       block:
         let rhsV = constInt(I, rhs)
         asy.br.fn(getValueRef lhs, rhsV)
-    template name[T: X; U: X](lhs: T; rhs: U): untyped =
+    template name[T: X; U: X](lhs: T; rhs: U): untyped {.used.} =
       asy.br.fn(getValueRef lhs, getValueRef rhs)
 
   template genLhsRhsBooleanVariants(name, pred: untyped): untyped =
@@ -979,21 +982,21 @@ template declNumberOps*(asy: Assembler_LLVM, fd: FieldDescriptor): untyped =
 
     let I = fd.wordTy
 
-    template name(lhs, rhs: ValueRef): untyped =
+    template name(lhs, rhs: ValueRef): untyped {.used.} =
       if $getTypeOf(lhs) != $getTypeOf(rhs):
         raise newException(ValueError, "Inputs do not have matching types. LHS = " & $getTypeOf(lhs) & ", RHS = " & $getTypeOf(rhs))
       elif getTypeOf(lhs).isPointerType():
         raise newException(ValueError, "Inputs must not be pointer types.")
       asy.br.icmp(pred, lhs, rhs)
-    template name(lhs: T; rhs: U): untyped =
+    template name(lhs: T; rhs: U): untyped {.used.} =
       block:
         let lhsV = constInt(I, lhs)
         name(lhsV, getValueRef rhs)
-    template name(lhs: U; rhs: T): untyped =
+    template name(lhs: U; rhs: T): untyped {.used.} =
       block:
         let rhsV = constInt(I, rhs)
         name(getValueRef lhs, rhsV)
-    template name[T: X; U: X](lhs: T; rhs: U): untyped =
+    template name[T: X; U: X](lhs: T; rhs: U): untyped {.used.} =
       name(getValueRef lhs, getValueRef rhs)
 
   # standard binary operations

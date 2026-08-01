@@ -12,6 +12,8 @@
 #
 # ############################################################
 
+{.used.}
+
 import constantine/zoo_exports
 
 # Modify per-module prefix if needed
@@ -21,7 +23,19 @@ import constantine/zoo_exports
 
 import constantine/hashes
 
-func sha256_hash(digest: var array[32, byte], message: openArray[byte], clearMem: bool) {.libPrefix: "ctt_".} =
+func keccak256_hash(digest: var array[32, byte], message: openArray[byte], clearMem: bool) {.used, libPrefix: "ctt_".} =
+  ## Compute the Keccak256 hash of message
+  ## and store the result in digest.
+  ## Optionally, clear the memory buffer used.
+
+  # There is an extra indirect function call as we use a generic `hash` concept but:
+  # - the indirection saves space (instead of duplicating `hash`)
+  # - minimal overhead compared to hashing time
+  # - Can be tail-call optimized into a goto jump instead of call/return
+  # - Can be LTO-optimized
+  keccak256.hash(digest, message, clearMem)
+
+func sha256_hash(digest: var array[32, byte], message: openArray[byte], clearMem: bool) {.used, libPrefix: "ctt_".} =
   ## Compute the SHA-256 hash of message
   ## and store the result in digest.
   ## Optionally, clear the memory buffer used.

@@ -56,17 +56,61 @@ type (
 )
 
 type EthKzgContext struct {
-	cCtx *C.ctt_eth_kzg_context
+	cCtx       *C.ctt_eth_kzg_context
 	threadpool Threadpool
 }
 
 func EthKzgContextNew(trustedSetupFile string) (ctx EthKzgContext, err error) {
 	cFile := C.CString(trustedSetupFile)
 	defer C.free(unsafe.Pointer(cFile))
-	status := C.ctt_eth_trusted_setup_load(
+	status := C.ctt_eth_kzg_context_new(
 		&ctx.cCtx,
 		cFile,
 		C.cttEthTSFormat_ckzg4844,
+	)
+	if status != C.cttEthTS_Success {
+		err = errors.New(
+			C.GoString(C.ctt_eth_trusted_setup_status_to_string(status)),
+		)
+	}
+	ctx.threadpool.ctx = nil
+	return ctx, err
+}
+
+// EthKzgContextNewWithPrecompute creates a KZG context with precomputed MSM tables
+// for FK20 proofs (PeerDAS).
+//
+// t = base groups (stride between precomputed layers)
+// b = bits per window (window size = 2^b)
+//
+// SPEED / MEMORY TRADEOFF (PeerDAS, compute_cells_and_kzg_proofs = 128 MSMs per blob):
+// - no precompute, 1.8 MiB total:        7.083 ops/s   ~141 ms/blob
+// - t= 64, b= 6, ~   32.2 MiB total:     8.724 ops/s   ~115 ms/blob
+// - t= 64, b= 8, ~   96.0 MiB total:     9.518 ops/s   ~105 ms/blob
+// - t= 64, b=10, ~  312.0 MiB total:    10.547 ops/s    ~95 ms/blob
+// - t= 64, b=12, ~ 1056.0 MiB total:    11.629 ops/s    ~86 ms/blob
+// - t=128, b= 6, ~   16.5 MiB total:     8.783 ops/s   ~114 ms/blob
+// - t=128, b= 8, ~   48.0 MiB total:     9.965 ops/s   ~100 ms/blob
+// - t=128, b=10, ~  156.0 MiB total:    10.561 ops/s    ~95 ms/blob
+// - t=128, b=12, ~  528.0 MiB total:    11.505 ops/s    ~87 ms/blob
+// - t=256, b= 6, ~    8.2 MiB total:     8.641 ops/s   ~116 ms/blob
+// - t=256, b= 8, ~   24.0 MiB total:    10.244 ops/s    ~98 ms/blob
+// - t=256, b=10, ~   84.0 MiB total:    10.281 ops/s    ~97 ms/blob
+// - t=256, b=12, ~  288.0 MiB total:    10.868 ops/s    ~92 ms/blob
+//
+//  CPU: Intel i7-265K
+// Larger b = faster per MSM but exponentially more memory (2^b entries).
+// Larger t = fewer doublings but more precomputed layers.
+// Recommended (t=256, b=8): ~98 ms/blob proving, ~24 MiB total memory.
+func EthKzgContextNewWithPrecompute(trustedSetupFile string, t, b int) (ctx EthKzgContext, err error) {
+	cFile := C.CString(trustedSetupFile)
+	defer C.free(unsafe.Pointer(cFile))
+	status := C.ctt_eth_kzg_context_new_with_precompute(
+		&ctx.cCtx,
+		cFile,
+		C.cttEthTSFormat_ckzg4844,
+		C.int(t),
+		C.int(b),
 	)
 	if status != C.cttEthTS_Success {
 		err = errors.New(
@@ -81,8 +125,12 @@ func (ctx *EthKzgContext) SetThreadpool(tp Threadpool) {
 	ctx.threadpool = tp
 }
 
-func (ctx EthKzgContext) Delete() {
-	C.ctt_eth_trusted_setup_delete(ctx.cCtx)
+func (ctx *EthKzgContext) Delete() {
+    if ctx == nil || ctx.cCtx == nil {
+        return
+    }
+    C.ctt_eth_kzg_context_delete(ctx.cCtx)
+    ctx.cCtx = nil
 }
 
 func (ctx EthKzgContext) BlobToKzgCommitment(blob EthBlob) (commitment EthKzgCommitment, err error) {
@@ -306,10 +354,95 @@ func (ctx EthKzgContext) VerifyBlobKzgProofBatchParallel(blobs []EthBlob, commit
 	return true, nil
 }
 
+// Ethereum EIP-7594 PeerDAS API
+// -----------------------------------------------------
+
+type EthKzgCell [2048]byte
+
+func (ctx EthKzgContext) ComputeCellsAndKzgProofs(
+	blob *EthBlob,
+) (cells *[128]EthKzgCell, proofs *[128]EthKzgProof, err error) {
+	if blob == nil {
+		return nil, nil, errors.New("ComputeCellsAndKzgProofs: blob is nil")
+	}
+	cells = new([128]EthKzgCell)
+	proofs = new([128]EthKzgProof)
+	status := C.ctt_eth_kzg_compute_cells_and_kzg_proofs(
+		ctx.cCtx,
+		(*C.ctt_eth_kzg_cell)(unsafe.Pointer(cells)),
+		(*C.ctt_eth_kzg_proof)(unsafe.Pointer(proofs)),
+		(*C.ctt_eth_kzg_blob)(unsafe.Pointer(blob)),
+	)
+	if status != C.cttEthKzg_Success {
+		err = errors.New(
+			C.GoString(C.ctt_eth_kzg_status_to_string(status)),
+		)
+		return nil, nil, err
+	}
+	return cells, proofs, nil
+}
+
+func (ctx EthKzgContext) VerifyCellKzgProofBatch(
+	commitments []EthKzgCommitment,
+	cellIndices []uint64,
+	cells []EthKzgCell,
+	proofs []EthKzgProof,
+	secureRandomBytes [32]byte,
+) (bool, error) {
+	if len(commitments) != len(cellIndices) || len(commitments) != len(cells) || len(commitments) != len(proofs) {
+		return false, errors.New("VerifyCellKzgProofBatch: Lengths of inputs do not match.")
+	}
+	status := C.ctt_eth_kzg_verify_cell_kzg_proof_batch(
+		ctx.cCtx,
+		(*C.ctt_eth_kzg_commitment)(getAddr(commitments)),
+		(*C.uint64_t)(getAddr(cellIndices)),
+		(*C.ctt_eth_kzg_cell)(getAddr(cells)),
+		(*C.ctt_eth_kzg_proof)(getAddr(proofs)),
+		(C.size_t)(len(cells)),
+		(*C.uint8_t)(unsafe.Pointer(&secureRandomBytes)),
+	)
+	if status != C.cttEthKzg_Success {
+		if status == C.cttEthKzg_VerificationFailure {
+			return false, nil
+		}
+		err := errors.New(
+			C.GoString(C.ctt_eth_kzg_status_to_string(status)),
+		)
+		return false, err
+	}
+	return true, nil
+}
+
+func (ctx EthKzgContext) RecoverCellsAndKzgProofs(
+	cells []EthKzgCell,
+	cellIndices []uint64,
+) (recoveredCells *[128]EthKzgCell, recoveredProofs *[128]EthKzgProof, err error) {
+	if len(cells) != len(cellIndices) {
+		return nil, nil, errors.New("RecoverCellsAndKzgProofs: Lengths of inputs do not match.")
+	}
+	recoveredCells = new([128]EthKzgCell)
+	recoveredProofs = new([128]EthKzgProof)
+	status := C.ctt_eth_kzg_recover_cells_and_kzg_proofs(
+		ctx.cCtx,
+		(*C.ctt_eth_kzg_cell)(unsafe.Pointer(recoveredCells)),
+		(*C.ctt_eth_kzg_proof)(unsafe.Pointer(recoveredProofs)),
+		(*C.uint64_t)(getAddr(cellIndices)),
+		(*C.ctt_eth_kzg_cell)(getAddr(cells)),
+		(C.size_t)(len(cells)),
+	)
+	if status != C.cttEthKzg_Success {
+		err = errors.New(
+			C.GoString(C.ctt_eth_kzg_status_to_string(status)),
+		)
+		return nil, nil, err
+	}
+	return recoveredCells, recoveredProofs, nil
+}
+
 // Ethereum BLS signatures
 // -----------------------------------------------------
 
-func getAddr[T any](arg []T) (unsafe.Pointer) {
+func getAddr[T any](arg []T) unsafe.Pointer {
 	// Makes sure to not access a non existant 0 element if the slice is empty
 	if len(arg) > 0 {
 		return unsafe.Pointer(&arg[0])
@@ -318,19 +451,17 @@ func getAddr[T any](arg []T) (unsafe.Pointer) {
 	}
 }
 
-
 type (
 	EthBlsSecKey    C.ctt_eth_bls_seckey
 	EthBlsPubKey    C.ctt_eth_bls_pubkey
 	EthBlsSignature C.ctt_eth_bls_signature
 )
 
-
 // Several byte array aliases used for BLS sigs and EVM prec.
 type (
-	Bytes32         [32]byte // serialized secret key
-	Bytes48         [48]byte // compressed, serialized public key
-	Bytes96         [96]byte // compressed, serialized signature
+	Bytes32 [32]byte // serialized secret key
+	Bytes48 [48]byte // compressed, serialized public key
+	Bytes96 [96]byte // compressed, serialized signature
 )
 
 func (pub EthBlsPubKey) IsZero() bool {
@@ -424,15 +555,9 @@ func (sig *EthBlsSignature) Validate() (err error) {
 }
 
 func (sec *EthBlsSecKey) Serialize() (dst Bytes32, err error) {
-	status := C.ctt_eth_bls_serialize_seckey((*C.byte)(unsafe.Pointer(&dst)),
+	C.ctt_eth_bls_serialize_seckey((*C.byte)(unsafe.Pointer(&dst)),
 		(*C.ctt_eth_bls_seckey)(sec),
 	)
-	if status != C.cttCodecScalar_Success {
-		err := errors.New(
-			C.GoString(C.ctt_codec_scalar_status_to_string(status)),
-		)
-		return dst, err
-	}
 	return dst, nil
 }
 
@@ -553,6 +678,7 @@ func FastAggregateVerify(pubkeys []EthBlsPubKey, message []byte, aggregate_sig E
 type ethBlsBatchSigAccumulator struct {
 	ctx *C.ctt_eth_bls_batch_sig_accumulator
 }
+
 func ethBlsBatchSigAccumulatorAlloc() (accum ethBlsBatchSigAccumulator) {
 	accum.ctx = C.ctt_eth_bls_alloc_batch_sig_accumulator()
 	return accum
@@ -586,7 +712,6 @@ func (accum ethBlsBatchSigAccumulator) finalVerify() bool {
 	)
 	return bool(status)
 }
-
 
 func BatchVerifySoA(pubkeys []EthBlsPubKey, messages [][]byte, signatures []EthBlsSignature, secureRandomBytes Bytes32) (bool, error) {
 	if len(pubkeys) == 0 {
@@ -647,9 +772,9 @@ func BatchVerifySoA(pubkeys []EthBlsPubKey, messages [][]byte, signatures []EthB
 }
 
 type BatchVerifyTriplet struct {
-	pub EthBlsPubKey
+	pub     EthBlsPubKey
 	message []byte
-	sig EthBlsSignature
+	sig     EthBlsSignature
 }
 
 func BatchVerifyAoS(triplets []BatchVerifyTriplet, secureRandomBytes Bytes32) (bool, error) {
@@ -696,11 +821,10 @@ func BatchVerifyAoS(triplets []BatchVerifyTriplet, secureRandomBytes Bytes32) (b
 // --------------------------------
 
 type (
-	Bytes64     [64]byte
-	Bytes128    [128]byte
-	Bytes256    [256]byte
+	Bytes64  [64]byte
+	Bytes128 [128]byte
+	Bytes256 [256]byte
 )
-
 
 func EvmSha256(inputs []byte) (result Bytes32, err error) {
 	status := C.ctt_eth_evm_sha256((*C.byte)(&result[0]),

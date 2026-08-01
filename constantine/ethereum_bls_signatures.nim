@@ -60,7 +60,6 @@ export hashes # generic sandwich on sha256
 import
     ./platforms/[abstractions, views, allocs],
     ./named/algebras,
-    ./named/zoo_subgroups,
     ./math/[
       ec_shortweierstrass,
       extension_fields,
@@ -150,10 +149,10 @@ func validate_signature*(signature: Signature): CttCodecEccStatus {.libPrefix: p
 # Codecs
 # ------------------------------------------------------------------------------------------------
 
-func serialize_seckey*(dst: var array[32, byte], secret_key: SecretKey): CttCodecScalarStatus {.libPrefix: prefix_ffi.} =
+proc serialize_seckey*(dst: var array[32, byte], secret_key: SecretKey) {.libPrefix: prefix_ffi.} =
   ## Serialize a secret key
-  ## Returns cttCodecScalar_Success if successful
-  return dst.serialize_scalar(secret_key.raw)
+  ## SecretKey wraps Fr[BLS12_381] which is by construction in-range, so this cannot fail
+  dst.serialize_scalar(secret_key.raw)
 
 func serialize_pubkey_compressed*(dst: var array[48, byte], public_key: PublicKey): CttCodecEccStatus {.libPrefix: prefix_ffi.} =
   ## Serialize a public key in compressed (Zcash) format

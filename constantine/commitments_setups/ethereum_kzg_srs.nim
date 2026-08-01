@@ -8,11 +8,13 @@
 
 import
   constantine/named/algebras,
-  ../math/[ec_shortweierstrass, arithmetic, extension_fields],
-  ../platforms/[allocs, bithacks, fileio],
-  ../serialization/[codecs, codecs_status_codes, codecs_bls12_381],
-  ../math/polynomials/[polynomials, fft],
-  ../math/io/io_fields
+  constantine/math/[arithmetic, extension_fields],
+  constantine/math/elliptic/[ec_shortweierstrass_affine, ec_shortweierstrass_jacobian, ec_shortweierstrass_batch_ops, ec_multi_scalar_mul_precomp],
+  constantine/math/polynomials/[polynomials, fft_fields, fft_ec],
+  constantine/math/io/io_fields,
+  constantine/platforms/[allocs, bithacks, fileio, views, abstractions],
+  constantine/serialization/[codecs, codecs_status_codes, codecs_bls12_381],
+  constantine/commitments/kzg_multiproofs
 
 # Ensure all exceptions are converted to error codes
 {.push raises: [], checks: off.}
@@ -89,11 +91,46 @@ const ctt_eth_kzg4844_fr_pow2_roots_of_unity = [
   Fr[BLS12_381].fromHex"0x4b5371495990693fad1715b02e5713b5f070bb00e28a193d63e7cb4906ffc93f"
 ]
 
+template getRootOfUnityForSize(size: static int): Fr[BLS12_381] =
+  ## size MUST be a power of 2
+  bind ctt_eth_kzg4844_fr_pow2_roots_of_unity
+  const scale = log2_vartime(uint32 size)
+  ctt_eth_kzg4844_fr_pow2_roots_of_unity[scale]
+
+func computeRootsOfUnity(dst: var openArray[Fr[BLS12_381]], generatorRootOfUnity: Fr[BLS12_381]) =
+  dst[0].setOne()
+  var cur = generatorRootOfUnity
+  for i in 1 ..< dst.len:
+    dst[i] = cur
+    cur *= generatorRootOfUnity
+
 # Trusted setup
 # ------------------------------------------------------------
 
 const FIELD_ELEMENTS_PER_BLOB* = 4096
+const FIELD_ELEMENTS_PER_EXT_BLOB* = 2 * FIELD_ELEMENTS_PER_BLOB
 const KZG_SETUP_G2_LENGTH = 65
+
+# EIP-7594 PeerDAS constants
+# https://eips.ethereum.org/EIPS/eip-7594
+# https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.3/specs/fulu/polynomial-commitments-sampling.md
+const FIELD_ELEMENTS_PER_CELL* = 64
+const CELLS_PER_BLOB* = FIELD_ELEMENTS_PER_BLOB div FIELD_ELEMENTS_PER_CELL
+const CELLS_PER_EXT_BLOB* = FIELD_ELEMENTS_PER_EXT_BLOB div FIELD_ELEMENTS_PER_CELL
+const BYTES_PER_CELL* = FIELD_ELEMENTS_PER_CELL * 32
+
+type
+  PolyphaseKind* = enum
+    kNoPrecompute
+    kPrecompute
+
+type
+  PolyphaseSpectrumBank* = object
+    case kind*: PolyphaseKind
+    of kNoPrecompute:
+      rawPoints* {.align: 64.}: array[CELLS_PER_EXT_BLOB, array[FIELD_ELEMENTS_PER_CELL, EC_ShortW_Aff[Fp[BLS12_381], G1]]]
+    of kPrecompute:
+      precompPoints* {.align: 64.}: array[CELLS_PER_EXT_BLOB, PrecomputedMSM[EC_ShortW_Jac[Fp[BLS12_381], G1], FIELD_ELEMENTS_PER_CELL]]
 
 # On the number of 𝔾2 points:
 #   - In the Deneb specs, https://github.com/ethereum/consensus-specs/blob/v1.3.0/specs/deneb/polynomial-commitments.md
@@ -118,11 +155,20 @@ type
   EthereumKZGContext* = object
     ## KZG commitment context
 
+    # It can be very confusing to follow:
+    # - natural order, bit-reversed permuted, reversed
+    # - monomial/coefficient, and evaluation/lagrange form
+    # - powers of tau / srs for commitments, roots of unity for FFT
+    # - domain / bit-reverse permuted roots of unity for polynomial evaluation
+    #   vs natural order roots of unity (in FFT descriptor) for FFT
+
     # Trusted setup, see https://vitalik.ca/general/2022/03/14/trustedsetup.html
 
-    srs_lagrange_g1*{.align: 64.}: PolynomialEval[FIELD_ELEMENTS_PER_BLOB, EC_ShortW_Aff[Fp[BLS12_381], G1]]
+    srs_lagrange_brp_g1*{.align: 64.}: PolynomialEval[FIELD_ELEMENTS_PER_BLOB, EC_ShortW_Aff[Fp[BLS12_381], G1], kBitReversed]
     # Part of the Structured Reference String (SRS) holding the 𝔾1 points
-    # This is used for committing to polynomials and producing an opening proof at
+    # Stored in bit-reversed evaluation / Lagrange form
+    #
+    # This is used in EIP-4844 for committing to polynomials and producing an opening proof at
     # a random value (chosen via Fiat-Shamir heuristic)
     #
     # Referring to the 𝔾1 generator as G, in monomial basis / coefficient form we would store:
@@ -130,13 +176,21 @@ type
     # with τ a random secret derived from a multi-party computation ceremony
     # with at least one honest random secret contributor (also called KZG ceremony or powers-of-tau ceremony)
     #
-    # For efficiency we operate only on the evaluation form of polynomials over 𝔾1 (i.e. the Lagrange basis)
+    # In EIP-4844 we operate only on the evaluation form of polynomials over 𝔾1 (i.e. the Lagrange basis)
     # i.e. for agreed upon [ω⁰, ω¹, ..., ω⁴⁰⁹⁶]
     # we store [f(ω⁰), f(ω¹), ..., f(ω⁴⁰⁹⁶)]
     #
     # https://en.wikipedia.org/wiki/Lagrange_polynomial#Barycentric_form
     #
-    # Conversion can be done with a discrete Fourier transform.
+    # Conversion can be done with a discrete Fourier transform. In EIP-4844 we operate only on the evaluation form of polynomials over 𝔾1 (i.e. the Lagrange basis)
+
+    srs_monomial_g1*{.align: 64.}: PolynomialCoef[FIELD_ELEMENTS_PER_BLOB, EC_ShortW_Aff[Fp[BLS12_381], G1]]
+    # Part of the Structured Reference String (SRS) holding the 𝔾1 points
+    # Stores the powers of tau
+    #   [G, [τ]G, [τ²]G, ... [τ⁴⁰⁹⁶]G]
+    # in coefficient / monomial form
+    #
+    # This is used in EIP-7594 to produce KZG multiproofs
 
     srs_monomial_g2*{.align: 64.}: PolynomialCoef[KZG_SETUP_G2_LENGTH, EC_ShortW_Aff[Fp2[BLS12_381], G2]]
     # Part of the SRS holding the 𝔾2 points
@@ -150,7 +204,32 @@ type
     # For most schemes (Marlin, Plonk, Sonic, Ethereum's Deneb), only [τ]H is needed
     # but Ethereum's sharding will need 64 (65 with the generator H)
 
-    domain*{.align: 64.}: PolyEvalRootsDomain[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381]]
+    domain_brp*{.align: 64.}: PolyEvalRootsDomain[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381], kBitReversed]
+    # The domain field holds the roots of unity of the polynomial evaluation domain.
+    # Important: for Ethereum, roots of unity are used in bit-reversed order
+
+    ecfft_desc_ext*{.align: 64.}: ECFFT_Descriptor[EC_ShortW_Jac[Fp[BLS12_381], G1]]
+    fft_desc_ext*{.align: 64.}: FrFFT_Descriptor[Fr[BLS12_381]]
+    # FFT descriptors are precomputed
+    # They hold rootsOfUnity stored in natural order.
+    #
+    # The extended domain roots are stored in fft_desc_ext.rootsOfUnity
+    # and can be accessed when needed (e.g., in recover functions).
+
+    polyphaseSpectrumBank*{.align: 64.}: PolyphaseSpectrumBank
+    # Precomputed data for FK20 KZG multiproofs.
+    # kPrecompute variant holds PrecomputedMSM tables (one per output position),
+    # each table for MSM of size 64 (FIELD_ELEMENTS_PER_CELL).
+    # Default: t=64, b=12.
+    # Size: ~8.25 MiB per table × 128 tables ≈ 1056 MB total
+    #
+    # This combines
+    # - FK23: https://eprint.iacr.org/2023/033
+    #   for the base algorithm for KZG multiproofs via coset proofs
+    # - Herold-Hagopian precomputed MSMs
+    #   initially designed for Verkle Tries
+    #   - https://hackmd.io/WfIjm0icSmSoqy2cfqenhQ
+    #   - https://hackmd.io/@jsign/vkt-another-iteration-of-vkt-msms
 
   TrustedSetupStatus* = enum
     tsSuccess
@@ -160,24 +239,20 @@ type
   TrustedSetupFormat* = enum
     kReferenceCKzg4844
 
-func computeRootsOfUnity(dst: var openArray[Fr[BLS12_381]], generatorRootOfUnity: Fr[BLS12_381]) =
-  dst[0].setOne()
-  var cur = generatorRootOfUnity
-  for i in 1 ..< dst.len:
-    dst[i] = cur
-    cur *= generatorRootOfUnity
-
 proc load_ckzg4844(ctx: ptr EthereumKZGContext, f: File): TrustedSetupStatus =
   ## Read a trusted setup in the reference library c-kzg-4844 format
-  # Format is the following
+  # Format is the following (c-kzg-4844 with Monomial G1 for FK20):
   # <nG1: number of G1 points>
   # <nG2: number of G2 points>
-  # <Hex encoding of compressed G1 point: 0>
+  # <Hex encoding of compressed G1 point (Lagrange): 0>
   # ...
-  # <Hex encoding of compressed G1 point: nG1 - 1>
-  # <Hex encoding of compressed G2 point: 0>
+  # <Hex encoding of compressed G1 point (Lagrange): nG1 - 1>
+  # <Hex encoding of compressed G2 point (Monomial): 0>
   # ...
-  # <Hex encoding of compressed G2 point: nG2 - 1>
+  # <Hex encoding of compressed G2 point (Monomial): nG2 - 1>
+  # <Hex encoding of compressed G1 point (Monomial): 0>
+  # ...
+  # <Hex encoding of compressed G1 point (Monomial): nG1 - 1>
   #
   # Each line is terminated by new line/line feed (binary byte 10)
   #
@@ -221,15 +296,20 @@ proc load_ckzg4844(ctx: ptr EthereumKZGContext, f: File): TrustedSetupStatus =
 
   block:
     # G1 points - 96 characters + newline
+    # These are the Lagrange form (bit-reversed evaluation) points
+    # Original ceremony files:
+    # - https://github.com/ethereum/kzg-ceremony-verifier/blob/master/output_setups/trusted_setup_4096.json
+    # - https://github.com/ethereum/c-kzg-4844/blob/v2.1.7/src/trusted_setup.txt
+    # On disk, G1 points are stored in natural order and will need bit-reversal
     var bufG1Hex {.noInit.}: array[2*g1Bytes+1, char] # On MacOS, an extra byte seems to be needed for fscanf or AddressSanitizer complains
     var bufG1bytes {.noInit.}: array[g1Bytes, byte]
     var charsRead: cint
     for i in 0 ..< FIELD_ELEMENTS_PER_BLOB:
       let num_matches = f.c_fscanf(readHexG1, bufG1Hex.addr, charsRead.addr)
-      if num_matches != 1 and charsRead != 2*g1Bytes:
+      if num_matches != 1 or charsRead != 2*g1Bytes:
         return tsInvalidFile
       bufG1bytes.fromHex(bufG1Hex.toOpenArray(0, 2*g1Bytes-1))
-      let status = ctx.srs_lagrange_g1.evals[i].deserialize_g1_compressed(bufG1bytes)
+      let status = ctx.srs_lagrange_brp_g1.evals[i].deserialize_g1_compressed(bufG1bytes)
       if status != cttCodecEcc_Success:
         c_printf("[Constantine Trusted Setup] Invalid G1 point on line %d: CttCodecEccStatus code %d\n", cint(2+i), status)
         return tsInvalidFile
@@ -241,7 +321,7 @@ proc load_ckzg4844(ctx: ptr EthereumKZGContext, f: File): TrustedSetupStatus =
     var charsRead: cint
     for i in 0 ..< KZG_SETUP_G2_LENGTH:
       let num_matches = f.c_fscanf(readHexG2, bufG2Hex.addr, charsRead.addr)
-      if num_matches != 1 and charsRead != 2*g2Bytes:
+      if num_matches != 1 or charsRead != 2*g2Bytes:
         return tsInvalidFile
       bufG2bytes.fromHex(bufG2Hex.toOpenArray(0, 2*g2Bytes-1))
       let status = ctx.srs_monomial_g2.coefs[i].deserialize_g2_compressed(bufG2bytes)
@@ -250,46 +330,149 @@ proc load_ckzg4844(ctx: ptr EthereumKZGContext, f: File): TrustedSetupStatus =
         return tsInvalidFile
 
   block:
-    # Roots of Unity
-    ctx.domain.rootsOfUnity.computeRootsOfUnity(
-      generatorRootOfUnity =
-        static(
-          ctt_eth_kzg4844_fr_pow2_roots_of_unity[
-            log2_vartime(uint32 FIELD_ELEMENTS_PER_BLOB)
-          ]
-        )
-    )
-
-    # Compute the inverse of the domain degree
-    ctx.domain.invMaxDegree.fromUint(ctx.domain.rootsOfUnity.len.uint64)
-    ctx.domain.invMaxDegree.inv_vartime()
-
-  block:
-    # Bit-reversal permutations
-    ctx.srs_lagrange_g1.evals.bit_reversal_permutation()
-    ctx.domain.rootsOfUnity.bit_reversal_permutation()
-    ctx.domain.isBitReversed = true
+    # G1 points (Monomial form) - 96 characters + newline
+    # These are needed for FK20 multiproof computation (EIP-7594)
+    var bufG1Hex {.noInit.}: array[2*g1Bytes+1, char]
+    var bufG1bytes {.noInit.}: array[g1Bytes, byte]
+    var charsRead: cint
+    for i in 0 ..< FIELD_ELEMENTS_PER_BLOB:
+      let num_matches = f.c_fscanf(readHexG1, bufG1Hex.addr, charsRead.addr)
+      if num_matches != 1 or charsRead != 2*g1Bytes:
+        return tsInvalidFile
+      bufG1bytes.fromHex(bufG1Hex.toOpenArray(0, 2*g1Bytes-1))
+      let status = ctx.srs_monomial_g1.coefs[i].deserialize_g1_compressed(bufG1bytes)
+      if status != cttCodecEcc_Success:
+        c_printf("[Constantine Trusted Setup] Invalid G1 Monomial point on line %d: CttCodecEccStatus code %d\n", cint(2+FIELD_ELEMENTS_PER_BLOB+KZG_SETUP_G2_LENGTH+i), status)
+        return tsInvalidFile
 
   return tsSuccess
 
-proc trusted_setup_load*(ctx: var ptr EthereumKZGContext, filepath: cstring, format: TrustedSetupFormat): TrustedSetupStatus {.libPrefix: "ctt_eth_".} =
-  ## Load trusted setup from path
-  ## Currently the only format supported
-  ## is from the reference implementation c-kzg-4844 text file
+proc setupPolyphaseSpectrumBank(ctx: ptr EthereumKZGContext, t: int = 0, b: int = 0) =
+  ## Build the polyphase spectrum bank from the SRS monomial points.
+  ## Use when the bank has been mutated in-place (e.g., benchmarking different
+  ## precompute configs) and you need to restore it without reloading the full context.
+  ## `srs_monomial_g1` is never mutated, so this is safe.
 
-  ctx = allocHeapAligned(EthereumKZGContext, alignment = 64)
+  # Destroy any existing precompute tables
+  `=destroy`(ctx.polyphaseSpectrumBank)
+
+  type BLS12_381_G1_Aff = EC_ShortW_Aff[Fp[BLS12_381], G1]
+
+  # Recompute polyphase decomposition
+  let tmp = allocHeapAligned(array[FIELD_ELEMENTS_PER_CELL, array[CELLS_PER_EXT_BLOB, BLS12_381_G1_Aff]], 64)
+  defer: freeHeapAligned(tmp)
+  computePolyphaseDecompositionFourier(tmp[], ctx.srs_monomial_g1, ctx.ecfft_desc_ext)
+
+  if t > 0 and b > 0:
+    ctx.polyphaseSpectrumBank.kind = kPrecompute
+    for pos in 0 ..< CELLS_PER_EXT_BLOB:
+      var points {.noInit.}: array[FIELD_ELEMENTS_PER_CELL, BLS12_381_G1_Aff]
+      for offset in 0 ..< FIELD_ELEMENTS_PER_CELL:
+        points[offset] = tmp[offset][pos]
+      ctx.polyphaseSpectrumBank.precompPoints[pos].init(points, t = t, b = b)
+  else:
+    ctx.polyphaseSpectrumBank.kind = kNoPrecompute
+    for pos in 0 ..< CELLS_PER_EXT_BLOB:
+      for offset in 0 ..< FIELD_ELEMENTS_PER_CELL:
+        ctx.polyphaseSpectrumBank.rawPoints[pos][offset] = tmp[offset][pos]
+
+proc setupKzg4844ProtoDanksharding(ctx: ptr EthereumKZGContext) =
+  block:
+    # Powers of tau: [G, [τ]G, [τ²]G, ... [τ⁴⁰⁹⁶]G]
+
+    # Bit-reverse the Lagrange form points (for EIP-4844 commitments)
+    ctx.srs_lagrange_brp_g1.evals.bit_reversal_permutation()
+
+    # G1 Monomial points are already loaded from the trusted setup file
+
+  block:
+    # Initialize domain (bit-reversed roots of unity for polynomial evaluation)
+    # Domain: FIELD_ELEMENTS_PER_BLOB (4096) roots of unity (bit-reversed)
+    ctx.domain_brp.rootsOfUnity.computeRootsOfUnity(generatorRootOfunity = getRootOfUnityForSize(FIELD_ELEMENTS_PER_BLOB))
+    ctx.domain_brp.rootsOfUnity.bit_reversal_permutation()
+    ctx.domain_brp.invMaxDegree.fromUint(ctx.domain_brp.rootsOfUnity.len.uint64)
+    ctx.domain_brp.invMaxDegree.inv_vartime()
+
+proc setupKzg7594PeerDAS(ctx: ptr EthereumKZGContext, t, b: int) =
+  # Initialize FFT descriptors
+  ctx.ecfft_desc_ext = ECFFT_Descriptor[EC_ShortW_Jac[Fp[BLS12_381], G1]].new(
+    order = FIELD_ELEMENTS_PER_EXT_BLOB,
+    generatorRootOfUnity = getRootOfUnityForSize(FIELD_ELEMENTS_PER_EXT_BLOB)
+  )
+
+  # Domain: FIELD_ELEMENTS_PER_EXT_BLOB (8192) roots of unity
+  ctx.fft_desc_ext = FrFFT_Descriptor[Fr[BLS12_381]].new(
+    order = FIELD_ELEMENTS_PER_EXT_BLOB,
+    generatorRootOfUnity = getRootOfUnityForSize(FIELD_ELEMENTS_PER_EXT_BLOB)
+  )
+
+  ctx.setupPolyphaseSpectrumBank(t, b)
+
+proc load_from_file(ctx: var ptr EthereumKZGContext, filepath: cstring, format: TrustedSetupFormat, t = 64, b = 12): TrustedSetupStatus =
+  ## Load from a trusted setup file.
 
   var f: File
   let ok = f.open(filepath, kRead)
   if not ok:
     return tsMissingOrInaccessibleFile
 
-  assert format == kReferenceCKzg4844, "Only c-kzg-4844 .txt format is supported"
+  ctx = alloc0HeapAligned(EthereumKZGContext, alignment = 64)
+
+  defer:
+    fileio.close(f)
 
   let status = ctx.load_ckzg4844(f)
-  fileio.close(f)
+  if status != tsSuccess:
+    freeHeapAligned(ctx)
+    ctx = nil
   return status
 
-proc trusted_setup_delete*(ctx: ptr EthereumKZGContext) {.libPrefix: "ctt_eth_".} =
+proc new*(ctx: var ptr EthereumKZGContext, filepath: cstring, format: TrustedSetupFormat): TrustedSetupStatus {.exportc: "ctt_eth_kzg_context_new".} =
+  result = ctx.load_from_file(filepath, format)
+  if result == tsSuccess:
+    ctx.setupKzg4844ProtoDanksharding()
+    ctx.setupKzg7594PeerDAS(t=0, b=0)
+
+proc new_with_precompute*(ctx: var ptr EthereumKZGContext, filepath: cstring, format: TrustedSetupFormat, t, b: cint): TrustedSetupStatus {.exportc: "ctt_eth_kzg_context_new_with_precompute".} =
+  ## Create a KZG context with precomputed MSM tables for FK20 proofs (PeerDAS).
+  ##
+  ## `t` = base groups (stride between precomputed layers)
+  ## `b` = bits per window (window size = 2^b)
+  ##
+  ## SPEED / MEMORY TRADEOFF (PeerDAS, compute_cells_and_kzg_proofs = 128 MSMs of 64 points per blob):
+  ## - no precompute, 1.8 MiB total:        7.083 ops/s   ~141 ms/blob
+  ## - t= 64, b= 6, ~   32.2 MiB total:     8.724 ops/s   ~115 ms/blob
+  ## - t= 64, b= 8, ~   96.0 MiB total:     9.518 ops/s   ~105 ms/blob
+  ## - t= 64, b=10, ~  312.0 MiB total:    10.547 ops/s    ~95 ms/blob
+  ## - t= 64, b=12, ~ 1056.0 MiB total:    11.629 ops/s    ~86 ms/blob
+  ## - t=128, b= 6, ~   16.5 MiB total:     8.783 ops/s   ~114 ms/blob
+  ## - t=128, b= 8, ~   48.0 MiB total:     9.965 ops/s   ~100 ms/blob
+  ## - t=128, b=10, ~  156.0 MiB total:    10.561 ops/s    ~95 ms/blob
+  ## - t=128, b=12, ~  528.0 MiB total:    11.505 ops/s    ~87 ms/blob
+  ## - t=256, b= 6, ~    8.2 MiB total:     8.641 ops/s   ~116 ms/blob
+  ## - t=256, b= 8, ~   24.0 MiB total:    10.244 ops/s    ~98 ms/blob
+  ## - t=256, b=10, ~   84.0 MiB total:    10.281 ops/s    ~97 ms/blob
+  ## - t=256, b=12, ~  288.0 MiB total:    10.868 ops/s    ~92 ms/blob
+  ##
+  ## CPU: Intel i7-265K
+  ## Larger b = faster per MSM but exponentially more memory (2^b entries).
+  ## Larger t = fewer doublings but more precomputed layers.
+  ## Recommended (t=256, b=8): ~98 ms/blob proving, ~24 MiB total memory.
+  result = ctx.load_from_file(filepath, format)
+  if result == tsSuccess:
+    ctx.setupKzg4844ProtoDanksharding()
+    ctx.setupKzg7594PeerDAS(t, b)
+
+proc delete*(ctx: ptr EthereumKZGContext) {.exportc: "ctt_eth_kzg_context_delete".} =
+  # Not why but `=destroy`(ctx.polyphaseSpectrumBank)
+  # can apparently raise
+  # but destroying the individual precomp MSM field cannot
   if not ctx.isNil:
+    case ctx.polyphaseSpectrumBank.kind
+    of kNoPrecompute: discard
+    of kPrecompute:
+      for i in 0 ..< CELLS_PER_EXT_BLOB:
+        `=destroy`(ctx.polyphaseSpectrumBank.precompPoints[i])
+    `=destroy`(ctx.ecfft_desc_ext)
+    `=destroy`(ctx.fft_desc_ext)
     freeHeapAligned(ctx)
