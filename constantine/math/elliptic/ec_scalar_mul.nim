@@ -66,7 +66,7 @@ import
 template checkScalarMulScratchspaceLen(len: int) =
   ## CHeck that there is a minimum of scratchspace to hold the temporaries
   debug:
-    assert len >= 2, "Internal Error: the scratchspace for scalar multiplication should be equal or greater than 2"
+    assert len >= 2, "[ctt] Internal error: the scratchspace for scalar multiplication should be equal or greater than 2"
 
 func getWindowLen(bufLen: int): uint =
   ## Compute the maximum window size that fits in the scratchspace buffer
@@ -331,7 +331,7 @@ func scalarMulEndo*[scalBits; EC](
   for i in countdown(L-2, 0):
     Q.double()
     tmp.secretLookup(lut, recoded.getRecodedIndex(i))
-    tmp.cneg(SecretBool recoded.getRecodedNegate(i))
+    tmp.cneg(recoded.getRecodedNegate(i))
     Q += tmp
 
   # Now we need to correct if the sign miniscalar was not odd

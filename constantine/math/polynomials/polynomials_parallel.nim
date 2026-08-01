@@ -10,7 +10,6 @@ import ./polynomials {.all.}
 export polynomials
 
 import
-  constantine/named/algebras,
   constantine/math/arithmetic,
   constantine/platforms/[allocs, bithacks],
   ../../threadpool/threadpool
@@ -22,11 +21,11 @@ import
 ##
 ## ############################################################
 
-proc evalPolyOffDomainAt_parallel*[N: static int, Field](
+proc evalPolyOffDomainAt_parallel*[N: static int, Field; Ordering: static PolyOrdering](
        tp: Threadpool,
-       domain: ptr PolyEvalRootsDomain[N, Field],
+       domain: ptr PolyEvalRootsDomain[N, Field, Ordering],
        r: var Field,
-       poly: ptr PolynomialEval[N, Field],
+       poly: ptr PolynomialEval[N, Field, Ordering],
        z: ptr Field,
        invRootsMinusZ: ptr array[N, Field]) =
   ## Evaluate a polynomial in evaluation form
@@ -65,11 +64,11 @@ proc evalPolyOffDomainAt_parallel*[N: static int, Field](
   r.prod(t, domain.invMaxDegree)
   r *= sync(globalSum)
 
-proc evalPolyAt_parallel*[N: static int, Field](
+proc evalPolyAt_parallel*[N: static int, Field; Ordering: static PolyOrdering](
        tp: Threadpool,
-       domain: PolyEvalRootsDomain[N, Field],
+       domain: PolyEvalRootsDomain[N, Field, Ordering],
        r: var Field,
-       poly: PolynomialEval[N, Field],
+       poly: PolynomialEval[N, Field, Ordering],
        z: Field) =
   ## Evaluate a polynomial in evaluation form
   ## at the point z

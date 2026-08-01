@@ -21,7 +21,10 @@ import
   ./serialization/[codecs_status_codes, codecs_bls12_381, endians],
   ./commitments_setups/ethereum_kzg_srs
 
-export trusted_setup_load, trusted_setup_delete, TrustedSetupFormat, TrustedSetupStatus, EthereumKZGContext
+export
+  new, new_with_precompute, delete,
+  TrustedSetupFormat, TrustedSetupStatus, EthereumKZGContext,
+  FIELD_ELEMENTS_PER_BLOB
 
 ## ############################################################
 ##
@@ -43,28 +46,29 @@ export trusted_setup_load, trusted_setup_delete, TrustedSetupFormat, TrustedSetu
 ## - Audited reference implementation
 ##   https://github.com/ethereum/c-kzg-4844
 
-const prefix_eth_kzg4844 = "ctt_eth_kzg_"
+const prefix_eth_kzg = "ctt_eth_kzg_"
 import ./zoo_exports
 
 # Constants
 # ------------------------------------------------------------
-# Spec "ENDIANNESS" for deserialization is little-endian
-# https://github.com/ethereum/consensus-specs/blob/v1.3.0/specs/phase0/beacon-chain.md#misc
+# Spec "ENDIANNESS" for deserialization is big-endian in v1.6.1
+#   https://github.com/ethereum/consensus-specs/blob/v1.6.1/specs/deneb/polynomial-commitments.md#constants
+# It used to be little-endian in v1.3.0 of the spec
+#   https://github.com/ethereum/consensus-specs/blob/v1.3.0/specs/phase0/beacon-chain.md#misc
 
-const BYTES_PER_COMMITMENT = 48
-# const BYTES_PER_PROOF = 48
+const BYTES_PER_COMMITMENT* = 48
+const BYTES_PER_PROOF* = 48
 const BYTES_PER_FIELD_ELEMENT* = 32
 
 # Presets
 # ------------------------------------------------------------
 
-const FIELD_ELEMENTS_PER_BLOB* = 4096
 const FIAT_SHAMIR_PROTOCOL_DOMAIN = asBytes"FSBLOBVERIFY_V1_"
 const RANDOM_CHALLENGE_KZG_BATCH_DOMAIN = asBytes"RCKZGBATCH___V1_"
 
 # Derived
 # ------------------------------------------------------------
-const BYTES_PER_BLOB = BYTES_PER_FIELD_ELEMENT*FIELD_ELEMENTS_PER_BLOB
+const BYTES_PER_BLOB* = BYTES_PER_FIELD_ELEMENT*FIELD_ELEMENTS_PER_BLOB
 
 # Protocol Types
 # ------------------------------------------------------------
@@ -90,6 +94,7 @@ type
     cttEthKzg_EccCoordinateGreaterThanOrEqualModulus
     cttEthKzg_EccPointNotOnCurve
     cttEthKzg_EccPointNotInSubGroup
+    cttEthKzg_CellIndicesNotAscending
 
 # Fiat-Shamir challenges
 # ------------------------------------------------------------
@@ -140,10 +145,26 @@ func fiatShamirChallenge(
   transcript.finish(opening_challenge)
   dst[].fromDigest(opening_challenge)
 
+func getBatchBlindingFactor(
+       dst: var Fr[BLS12_381],
+       secureRandomBytes: array[32, byte]): bool =
+  ## Extract a blinding factor from secure random bytes.
+  ## Returns true if successful (derived scalar is non-zero),
+  ## false if input is all-zero or reduction yields zero.
+  ##
+  ## Callers should fall back to Fiat-Shamir challenge derivation on false.
+  for i in 0 ..< secureRandomBytes.len:
+    if secureRandomBytes[i] != byte 0:
+      dst.fromDigest(secureRandomBytes)
+      # Defense in depth, what if we get supplied the scalar field modulus
+      # Then `fromDigest` returns 0.
+      return not dst.isZero().bool
+  return false
+
 # Conversion
 # ------------------------------------------------------------
 
-func bytes_to_bls_bigint(dst: var Fr[BLS12_381].getBigInt(), src: array[32, byte]): CttCodecScalarStatus =
+func bytes_to_bls_bigint(dst: var Fr[BLS12_381].getBigInt(), src: array[32, byte]): CttCodecScalarStatus {.inline.} =
   ## Convert untrusted bytes to a trusted and validated BLS scalar field element.
   ## This function does not accept inputs greater than the BLS modulus.
   let status = dst.deserialize_scalar(src)
@@ -151,7 +172,7 @@ func bytes_to_bls_bigint(dst: var Fr[BLS12_381].getBigInt(), src: array[32, byte
     return status
   return cttCodecScalar_Success
 
-func bytes_to_bls_field(dst: var Fr[BLS12_381], src: array[32, byte]): CttCodecScalarStatus =
+func bytes_to_bls_field(dst: var Fr[BLS12_381], src: array[32, byte]): CttCodecScalarStatus {.inline.} =
   ## Convert untrusted bytes to a trusted and validated BLS scalar field element.
   ## This function does not accept inputs greater than the BLS modulus.
   var scalar {.noInit.}: Fr[BLS12_381].getBigInt()
@@ -161,7 +182,13 @@ func bytes_to_bls_field(dst: var Fr[BLS12_381], src: array[32, byte]): CttCodecS
   dst.fromBig(scalar)
   return cttCodecScalar_Success
 
-func bytes_to_kzg_commitment(dst: var KZGCommitment, src: array[48, byte]): CttCodecEccStatus =
+proc bls_field_to_bytes(dst: var array[32, byte], scalar: Fr[BLS12_381]) {.inline.} =
+  ## Serialize a BLS12-381 scalar field element to bytes
+  ## Follows the spec: big-endian encoding
+  ## Fr[BLS12_381] is by construction in-range, so this cannot fail
+  serialize_scalar(dst, scalar.toBig())
+
+func bytes_to_kzg_commitment(dst: var KZGCommitment, src: array[48, byte]): CttCodecEccStatus {.inline.} =
   ## Convert untrusted bytes into a trusted and validated KZGCommitment.
   let status = dst.distinctBase().deserialize_g1_compressed(src)
   if status == cttCodecEcc_PointAtInfinity:
@@ -169,7 +196,7 @@ func bytes_to_kzg_commitment(dst: var KZGCommitment, src: array[48, byte]): CttC
     return cttCodecEcc_Success
   return status
 
-func bytes_to_kzg_proof(dst: var KZGProof, src: array[48, byte]): CttCodecEccStatus =
+func bytes_to_kzg_proof(dst: var KZGProof, src: array[48, byte]): CttCodecEccStatus {.inline.} =
   ## Convert untrusted bytes into a trusted and validated KZGProof.
   let status = dst.distinctBase().deserialize_g1_compressed(src)
   if status == cttCodecEcc_PointAtInfinity:
@@ -178,7 +205,7 @@ func bytes_to_kzg_proof(dst: var KZGProof, src: array[48, byte]): CttCodecEccSta
   return status
 
 func blob_to_bigint_polynomial(
-       dst: ptr PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381].getBigInt()],
+       dst: ptr PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381].getBigInt(), kBitReversed],
        blob: Blob): CttCodecScalarStatus =
   ## Convert a blob to a polynomial in evaluation form
 
@@ -196,7 +223,7 @@ func blob_to_bigint_polynomial(
   return cttCodecScalar_Success
 
 func blob_to_field_polynomial(
-       dst: ptr PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381]],
+       dst: ptr PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381], kBitReversed],
        blob: Blob): CttCodecScalarStatus =
   ## Convert a blob to a polynomial in evaluation form
 
@@ -221,7 +248,7 @@ func blob_to_field_polynomial(
 # - Either we are in "HappyPath" section that shortcuts to resource cleanup on error
 # - or there are no resources to clean and we can early return from a function.
 
-template checkReturn(evalExpr: CttCodecScalarStatus): untyped {.dirty.} =
+template `?`(evalExpr: CttCodecScalarStatus): untyped {.dirty.} =
   # Translate codec status code to KZG status code
   # Beware of resource cleanup like heap allocation, this can early exit the caller.
   block:
@@ -231,7 +258,7 @@ template checkReturn(evalExpr: CttCodecScalarStatus): untyped {.dirty.} =
     of cttCodecScalar_Zero:                             discard
     of cttCodecScalar_ScalarLargerThanCurveOrder:       return cttEthKzg_ScalarLargerThanCurveOrder
 
-template checkReturn(evalExpr: CttCodecEccStatus): untyped {.dirty.} =
+template `?`(evalExpr: CttCodecEccStatus): untyped {.dirty.} =
   # Translate codec status code to KZG status code
   # Beware of resource cleanup like heap allocation, this can early exit the caller.
   block:
@@ -270,7 +297,7 @@ template check(Section: untyped, evalExpr: CttCodecEccStatus): untyped {.dirty.}
 func blob_to_kzg_commitment*(
        ctx: ptr EthereumKZGContext,
        dst: var array[48, byte],
-       blob: Blob): cttEthKzgStatus {.libPrefix: prefix_eth_kzg4844, tags:[Alloca, HeapAlloc, Vartime].} =
+       blob: Blob): cttEthKzgStatus {.libPrefix: prefix_eth_kzg, tags:[Alloca, HeapAlloc, Vartime].} =
   ## Compute a commitment to the `blob`.
   ## The commitment can be verified without needing the full `blob`
   ##
@@ -288,13 +315,13 @@ func blob_to_kzg_commitment*(
   ##
   ##   with proof = [(p(τ) - p(z)) / (τ-z)]₁
 
-  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381].getBigInt()], 64)
+  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381].getBigInt(), kBitReversed], 64)
 
   block HappyPath:
     check HappyPath, poly.blob_to_bigint_polynomial(blob)
 
     var r {.noinit.}: EC_ShortW_Aff[Fp[BLS12_381], G1]
-    kzg_commit(ctx.srs_lagrange_g1, r, poly[])
+    kzg_commit(ctx.srs_lagrange_brp_g1, r, poly[])
     discard dst.serialize_g1_compressed(r)
 
     result = cttEthKzg_Success
@@ -307,7 +334,7 @@ func compute_kzg_proof*(
        proof_bytes: var array[48, byte],
        y_bytes: var array[32, byte],
        blob: Blob,
-       z_bytes: array[32, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg4844, tags:[Alloca, HeapAlloc, Vartime].} =
+       z_bytes: array[32, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg, tags:[Alloca, HeapAlloc, Vartime].} =
   ## Generate:
   ## - A proof of correct evaluation.
   ## - y = p(z), the evaluation of p at the opening_challenge z, with p being the Blob interpreted as a polynomial.
@@ -324,9 +351,9 @@ func compute_kzg_proof*(
 
   # Random or Fiat-Shamir challenge
   var z {.noInit.}: Fr[BLS12_381]
-  checkReturn z.bytes_to_bls_field(z_bytes)
+  ?z.bytes_to_bls_field(z_bytes)
 
-  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381]], 64)
+  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381], kBitReversed], 64)
 
   block HappyPath:
     # Blob -> Polynomial
@@ -337,8 +364,8 @@ func compute_kzg_proof*(
     var proof {.noInit.}: EC_ShortW_Aff[Fp[BLS12_381], G1] # [proof]₁ = [(p(τ) - p(z)) / (τ-z)]₁
 
     kzg_prove(
-      ctx.srs_lagrange_g1,
-      ctx.domain,
+      ctx.srs_lagrange_brp_g1,
+      ctx.domain_brp,
       y, proof,
       poly[],
       z)
@@ -355,20 +382,20 @@ func verify_kzg_proof*(
        commitment_bytes: array[48, byte],
        z_bytes: array[32, byte],
        y_bytes: array[32, byte],
-       proof_bytes: array[48, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg4844, tags:[Alloca, Vartime].} =
+       proof_bytes: array[48, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg, tags:[Alloca, Vartime].} =
   ## Verify KZG proof that p(z) == y where p(z) is the polynomial represented by "polynomial_kzg"
 
   var commitment {.noInit.}: KZGCommitment
-  checkReturn commitment.bytes_to_kzg_commitment(commitment_bytes)
+  ?commitment.bytes_to_kzg_commitment(commitment_bytes)
 
   var opening_challenge {.noInit.}: Fr[BLS12_381].getBigInt()
-  checkReturn opening_challenge.bytes_to_bls_bigint(z_bytes)
+  ?opening_challenge.bytes_to_bls_bigint(z_bytes)
 
   var eval_at_challenge {.noInit.}: Fr[BLS12_381].getBigInt()
-  checkReturn eval_at_challenge.bytes_to_bls_bigint(y_bytes)
+  ?eval_at_challenge.bytes_to_bls_bigint(y_bytes)
 
   var proof {.noInit.}: KZGProof
-  checkReturn proof.bytes_to_kzg_proof(proof_bytes)
+  ?proof.bytes_to_kzg_proof(proof_bytes)
 
   let verif = kzg_verify(EC_ShortW_Aff[Fp[BLS12_381], G1](commitment),
                          opening_challenge, eval_at_challenge,
@@ -383,15 +410,15 @@ func compute_blob_kzg_proof*(
        ctx: ptr EthereumKZGContext,
        proof_bytes: var array[48, byte],
        blob: Blob,
-       commitment_bytes: array[48, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg4844, tags:[Alloca, HeapAlloc, Vartime].} =
+       commitment_bytes: array[48, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg, tags:[Alloca, HeapAlloc, Vartime].} =
   ## Given a blob, return the KZG proof that is used to verify it against the commitment.
   ## This method does not verify that the commitment is correct with respect to `blob`.
 
   var commitment {.noInit.}: KZGCommitment
-  checkReturn commitment.bytes_to_kzg_commitment(commitment_bytes)
+  ?commitment.bytes_to_kzg_commitment(commitment_bytes)
 
   # Blob -> Polynomial
-  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381]], 64)
+  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381], kBitReversed], 64)
 
   block HappyPath:
     # Blob -> Polynomial
@@ -406,8 +433,8 @@ func compute_blob_kzg_proof*(
     var proof {.noInit.}: EC_ShortW_Aff[Fp[BLS12_381], G1] # [proof]₁ = [(p(τ) - p(z)) / (τ-z)]₁
 
     kzg_prove(
-      ctx.srs_lagrange_g1,
-      ctx.domain,
+      ctx.srs_lagrange_brp_g1,
+      ctx.domain_brp,
       y, proof,
       poly[],
       opening_challenge)
@@ -423,16 +450,16 @@ func verify_blob_kzg_proof*(
        ctx: ptr EthereumKZGContext,
        blob: Blob,
        commitment_bytes: array[48, byte],
-       proof_bytes: array[48, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg4844, tags:[Alloca, HeapAlloc, Vartime].} =
+       proof_bytes: array[48, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg, tags:[Alloca, HeapAlloc, Vartime].} =
   ## Given a blob and a KZG proof, verify that the blob data corresponds to the provided commitment.
 
   var commitment {.noInit.}: KZGCommitment
-  checkReturn commitment.bytes_to_kzg_commitment(commitment_bytes)
+  ?commitment.bytes_to_kzg_commitment(commitment_bytes)
 
   var proof {.noInit.}: KZGProof
-  checkReturn proof.bytes_to_kzg_proof(proof_bytes)
+  ?proof.bytes_to_kzg_proof(proof_bytes)
 
-  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381]], 64)
+  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381], kBitReversed], 64)
 
   block HappyPath:
     # Blob -> Polynomial
@@ -442,7 +469,7 @@ func verify_blob_kzg_proof*(
     var opening_challenge {.noInit.}: Fr[BLS12_381]
     var eval_at_challenge {.noInit.}: Fr[BLS12_381]
     opening_challenge.addr.fiatShamirChallenge(blob, commitment_bytes)
-    ctx.domain.evalPolyAt(eval_at_challenge, poly[], opening_challenge)
+    ctx.domain_brp.evalPolyAt(eval_at_challenge, poly[], opening_challenge)
 
     # KZG verification
     let verif = kzg_verify(EC_ShortW_Aff[Fp[BLS12_381], G1](commitment),
@@ -463,7 +490,7 @@ func verify_blob_kzg_proof_batch*(
        commitments_bytes: ptr UncheckedArray[array[48, byte]],
        proof_bytes: ptr UncheckedArray[array[48, byte]],
        n: int,
-       secureRandomBytes: array[32, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg4844, tags:[Alloca, HeapAlloc, Vartime].} =
+       secureRandomBytes: array[32, byte]): cttEthKzgStatus {.libPrefix: prefix_eth_kzg, tags:[Alloca, HeapAlloc, Vartime].} =
   ## Verify `n` (blob, commitment, proof) sets efficiently
   ##
   ## `n` is the number of verifications set
@@ -486,7 +513,7 @@ func verify_blob_kzg_proof_batch*(
   let opening_challenges = allocHeapArrayAligned(Fr[BLS12_381], n, alignment = 64)
   let evals_at_challenges = allocHeapArrayAligned(Fr[BLS12_381].getBigInt(), n, alignment = 64)
   let proofs = allocHeapArrayAligned(KZGProof, n, alignment = 64)
-  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381]], alignment = 64)
+  let poly = allocHeapAligned(PolynomialEval[FIELD_ELEMENTS_PER_BLOB, Fr[BLS12_381], kBitReversed], alignment = 64)
 
   block HappyPath:
     for i in 0 ..< n:
@@ -495,7 +522,7 @@ func verify_blob_kzg_proof_batch*(
       opening_challenges[i].addr.fiatShamirChallenge(blobs[i], commitments_bytes[i])
 
       var eval_at_challenge_fr {.noInit.}: Fr[BLS12_381]
-      ctx.domain.evalPolyAt(
+      ctx.domain_brp.evalPolyAt(
         eval_at_challenge_fr,
         poly[], opening_challenges[i]
       )
@@ -504,13 +531,8 @@ func verify_blob_kzg_proof_batch*(
       check HappyPath, proofs[i].bytes_to_kzg_proof(proof_bytes[i])
 
     var randomBlindingFr {.noInit.}: Fr[BLS12_381]
-    block blinding: # Ensure we don't multiply by 0 for blinding
-      # 1. Try with the random number supplied
-      for i in 0 ..< secureRandomBytes.len:
-        if secureRandomBytes[i] != byte 0:
-          randomBlindingFr.fromDigest(secureRandomBytes)
-          break blinding
-      # 2. If it's 0 (how?!), we just hash all the Fiat-Shamir challenges
+    if not randomBlindingFr.getBatchBlindingFactor(secureRandomBytes):
+      # Fall back: hash all the Fiat-Shamir challenges
       var transcript: sha256
       transcript.init()
       transcript.update(RANDOM_CHALLENGE_KZG_BATCH_DOMAIN)
@@ -521,7 +543,7 @@ func verify_blob_kzg_proof_batch*(
       randomBlindingFr.fromDigest(blindingBytes)
 
     let linearIndepRandNumbers = allocHeapArrayAligned(Fr[BLS12_381], n, alignment = 64)
-    linearIndepRandNumbers.computePowers(randomBlindingFr, n)
+    linearIndepRandNumbers.computePowers(randomBlindingFr, n, skipOne = true)
 
     type EcAffArray = ptr UncheckedArray[EC_ShortW_Aff[Fp[BLS12_381], G1]]
     let verif = kzg_verify_batch(

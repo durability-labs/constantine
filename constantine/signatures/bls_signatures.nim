@@ -95,18 +95,11 @@ func coreVerify*[Pubkey, Sig](
   negG.neg(Pubkey.F.Name.getGenerator($Pubkey.G))
   H.hashToCurve(k, Q, augmentation, message, domainSepTag)
 
-  when Sig.F.Name.getEmbeddingDegree() == 12:
-    var gt {.noInit.}: Fp12[Sig.F.Name]
-  else:
-    {.error: "Not implemented: signature on k=" & $Sig.F.Name.getEmbeddingDegree() & " for curve " & $$Sig.F.Name.}
-
   # e(PK, H(msg))*e(sig, -G) == 1
   when Sig.G == G2:
-    pairing(gt, [pubkey, negG], [Q, signature])
+    return pairing_check(pubkey, Q, negG, signature)
   else:
-    pairing(gt, [Q, signature], [pubkey, negG])
-
-  return gt.isOne().bool()
+    return pairing_check(Q, pubkey, signature, negG)
 
 # ############################################################
 #
@@ -224,8 +217,8 @@ func finalVerify*[F, G](ctx: var BLSAggregateSigAccumulator, aggregateSignature:
   ## Returns false if nothing was accumulated
   ## Rteturns false on verification failure
 
-  type FF1 = BLSAggregateSigAccumulator.FF1
-  type FF2 = BLSAggregateSigAccumulator.FF2
+  type FF1 {.used.} = BLSAggregateSigAccumulator.FF1
+  type FF2 {.used.} = BLSAggregateSigAccumulator.FF2
   type Fpk = BLSAggregateSigAccumulator.Fpk
 
   when G == G2:
@@ -507,8 +500,8 @@ func finalVerify*(ctx: var BLSBatchSigAccumulator): bool =
   if not ctx.aggSigOnce:
     return false
 
-  type FF1 = BLSBatchSigAccumulator.FF1
-  type FF2 = BLSBatchSigAccumulator.FF2
+  type FF1 {.used.} = BLSBatchSigAccumulator.FF1
+  type FF2 {.used.} = BLSBatchSigAccumulator.FF2
   type Fpk = BLSBatchSigAccumulator.Fpk
 
   when BLSBatchSigAccumulator.SigAccum.G == G2:

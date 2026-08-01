@@ -1,5 +1,5 @@
 packageName   = "constantine"
-version       = "0.2.0"
+version       = "0.2.1"
 author        = "Mamy Ratsimbazafy"
 description   = "This library provides thoroughly tested and highly-optimized implementations of cryptography protocols."
 license       = "MIT or Apache License 2.0"
@@ -102,7 +102,7 @@ proc getEnvVars(): tuple[useAsmIfAble, force32, forceLto, useLtoDefault: bool] =
     result.useLtoDefault = false
   else:
     result.forceLto = false
-    result.useLtoDefault = true
+    result.useLtoDefault = false # GCC 15 LTO bug - https://github.com/mratsim/constantine/issues/588
 
 # Library compilation
 # ----------------------------------------------------------------
@@ -218,6 +218,19 @@ proc releaseBuildOptions(buildMode = bmBinary): string =
   # We thus need to embed the search path directly into our binary using runtime search path.
   let linkerOptions = if apple: " --passL:'-L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib' "
                       else: ""
+
+  # On MacOS for libraries: ld: -stack_size option can only be used when linking a main executable
+  # Stack size: Platform-specific linker flags
+  # Windows: /STACK (MSVC) or --stack (MinGW)
+  # macOS: -stack_size (ld64/ld_prime, hex)
+  # Linux: -z stack-size (GNU ld / lld, decimal)
+  # let stackSizeFlag =
+  #   if defined(windows):
+  #     # Windows: MSVC uses /STACK, MinGW uses --stack
+  #     if defined(msvc): " --passL:/STACK:1048576 "
+  #     else: " --passL:-Wl,--stack,1048576 "
+  #   elif apple: " --passL:-Wl,-stack_size,0x100000 "  # ld64/ld_prime syntax (1MB)
+  #   else: " --passL:-Wl,-z,stack-size=1048576 "     # GNU ld / lld (1MB)
   let osSpecific =
     if defined(windows): "" # " --passC:-mno-stack-arg-probe "
       # Remove the auto __chkstk, which are: 1. slower, 2. not supported on Rust "stable-gnu" channel.
@@ -231,6 +244,7 @@ proc releaseBuildOptions(buildMode = bmBinary): string =
     envASM & env32 &
     ltoOptions &
     linkerOptions &
+    # stackSizeFlag &
     osSpecific &
     threadLocalStorage &
     compilerFlags()
@@ -478,12 +492,13 @@ const testDesc: seq[tuple[path: string, useGMP: bool]] = @[
   # ("tests/math_elliptic_curves/t_ec_twedw_prj_mul_sanity", false),
   ("tests/math_elliptic_curves/t_ec_twedw_prj_mul_distri", false),
 
-  ("tests/math_elliptic_curves/t_ec_shortw_jac_g1_mul_endomorphism_bls12_381", false),
-  # ("tests/math_elliptic_curves/t_ec_shortw_prj_g1_mul_endomorphism_bls12_381", false),
-  ("tests/math_elliptic_curves/t_ec_shortw_jac_g1_mul_endomorphism_bn254_snarks", false),
-  # ("tests/math_elliptic_curves/t_ec_shortw_prj_g1_mul_endomorphism_bn254_snarks", false),
-  ("tests/math_elliptic_curves/t_ec_twedwards_mul_endomorphism_bandersnatch", false),
+  ("tests/math_elliptic_curves/t_ec_shortw_jac_g1_mul_endomorphism_bls12_381.nim", false),
+  # ("tests/math_elliptic_curves/t_ec_shortw_prj_g1_mul_endomorphism_bls12_381.nim", false),
+  ("tests/math_elliptic_curves/t_ec_shortw_jac_g1_mul_endomorphism_bn254_snarks.nim", false),
+  # ("tests/math_elliptic_curves/t_ec_shortw_prj_g1_mul_endomorphism_bn254_snarks.nim", false),
+  ("tests/math_elliptic_curves/t_ec_twedwards_mul_endomorphism_bandersnatch.nim", false),
 
+  ("tests/math_elliptic_curves/t_ec_scalar_mul_vartime_exhaustive.nim", false),
 
   # Elliptic curve arithmetic 𝔾₂
   # ----------------------------------------------------------
@@ -565,6 +580,7 @@ const testDesc: seq[tuple[path: string, useGMP: bool]] = @[
   ("tests/math_elliptic_curves/t_ec_shortw_jac_g1_msm.nim", false),
   ("tests/math_elliptic_curves/t_ec_twedw_prj_msm.nim", false),
   ("tests/math_elliptic_curves/t_ec_shortw_jac_g2_msm_bug_366.nim", false),
+  ("tests/math_elliptic_curves/t_ec_multi_scalar_mul_precomp.nim", false),
 
   # Subgroups and cofactors
   # ----------------------------------------------------------
@@ -614,6 +630,10 @@ const testDesc: seq[tuple[path: string, useGMP: bool]] = @[
   # Polynomials
   # ----------------------------------------------------------
   ("tests/math_polynomials/t_polynomials.nim", false),
+  ("tests/math_polynomials/t_fft_internals.nim", false),
+  ("tests/math_polynomials/t_fft.nim", false),
+  ("tests/math_polynomials/t_fft_coset.nim", false),
+  ("tests/math_polynomials/t_bit_reversal.nim", false),
 
   # Protocols
   # ----------------------------------------------------------
@@ -623,11 +643,18 @@ const testDesc: seq[tuple[path: string, useGMP: bool]] = @[
   ("tests/t_ethereum_eip2333_bls12381_key_derivation.nim", false),
   ("tests/t_ethereum_eip4844_deneb_kzg.nim", false),
   ("tests/t_ethereum_eip4844_deneb_kzg_parallel.nim", false),
+  ("tests/t_eth_eip7594_peerdas.nim", false),
   ("tests/t_ethereum_verkle_primitives.nim", false),
   ("tests/t_ethereum_verkle_ipa_primitives.nim", false),
 
+  # PeerDAS - low-level
+  # ----------------------------------------------------------
+  # ("tests/eth_eip7594_peerdas/t_cells_and_kzg_proofs_opt.nim", false),
+  # ("tests/eth_eip7594_peerdas/t_compute_cells_opt.nim", false),
+  # ("tests/eth_eip7594_peerdas/t_peerdas_recovery.nim", false),
+
   # Signatures
-  # NOTE: Requires OpenSSL version >=v3.3 for to Keccak256 support
+  # NOTE: Requires OpenSSL version >=v3.3 for Keccak256 support
   # ("tests/ecdsa/t_ecdsa_verify_openssl.nim", false),
 
   # Proof systems
@@ -673,6 +700,7 @@ const testDescThreadpool: seq[string] = @[
   "benchmarks-threadpool/matrix_transposition/threadpool_transposes.nim",
   "benchmarks-threadpool/histogram_2D/threadpool_histogram.nim",
   "benchmarks-threadpool/logsumexp/threadpool_logsumexp.nim",
+  "tests/threadpool/t_257_threads.nim",
 ]
 
 const testDescMultithreadedCrypto: seq[string] = @[
@@ -693,10 +721,13 @@ const benchDesc = [
   "bench_fp12",
   "bench_ec_g1",
   "bench_ec_g1_scalar_mul",
+  "bench_ec_g1_scalar_mul_vartime",
   "bench_ec_g1_batch",
   "bench_ec_msm_bandersnatch",
+  "bench_ec_msm_precomp_bandersnatch",
   "bench_ec_msm_bn254_snarks_g1",
   "bench_ec_msm_bls12_381_g1",
+  "bench_ec_msm_precomp_bls12_381_g1",
   "bench_ec_msm_bls12_381_g2",
   "bench_ec_msm_pasta",
   "bench_ec_g2",
@@ -721,11 +752,21 @@ const benchDesc = [
   "bench_gmp_modmul",
   "bench_eth_bls_signatures",
   "bench_eth_eip4844_kzg",
-  "bench_eth_evm_modexp_dos",
-  "bench_eth_eip2537_subgroup_checks_impact",
+  "bench_eth_eip7594_peerdas",
+  "bench_kzg_multiproofs",
+  "bench_matrix_toeplitz",
+  "eth_eip7594/benchset_generation",
+  "eth_eip7594/perf_compute_cells",
+  "eth_eip7594/perf_compute_cells_and_kzg_proofs",
+  "eth_eip7594/perf_recover_cells_and_kzg_proofs",
+  "eth_eip7594/perf_verify_cell_kzg_proof_batch",
   "bench_verkle_primitives",
   "bench_eth_evm_precompiles",
   "bench_multilinear_extensions",
+  "bench_fft_fields",
+  "bench_fft_ec",
+  "bench_fft_bit_reversal",
+
   # "zkalc", # Already tested through make_zkalc
 ]
 
@@ -1057,6 +1098,9 @@ task bench_ec_g1_batch, "Run benchmark on Elliptic Curve group 𝔾1 (batch ops)
 task bench_ec_g1_scalar_mul, "Run benchmark on Elliptic Curve group 𝔾1 (Scalar Multiplication) - CC compiler":
   runBench("bench_ec_g1_scalar_mul")
 
+task bench_ec_g1_scalar_mul_vartime, "Run benchmark on Elliptic Curve group 𝔾1 (Variable-Time Scalar Multiplication) - CC compiler":
+  runBench("bench_ec_g1_scalar_mul_vartime")
+
 # Elliptic curve 𝔾₁ - Multi-scalar-mul
 # ------------------------------------------
 
@@ -1069,12 +1113,17 @@ task bench_ec_msm_bn254_snarks_g1, "Run benchmark: Multi-Scalar-Mul for BN254-Sn
 task bench_ec_msm_bls12_381_g1, "Run benchmark: Multi-Scalar-Mul for BLS12-381 𝔾1 - CC compiler":
   runBench("bench_ec_msm_bls12_381_g1")
 
+task bench_ec_msm_precomp_bls12_381_g1, "Run benchmark: Precomp Multi-Scalar-Mul for BLS12-381 𝔾1 - CC compiler":
+  runBench("bench_ec_msm_precomp_bls12_381_g1")
+
 task bench_ec_msm_bls12_381_g2, "Run benchmark: Multi-Scalar-Mul for BLS12-381 𝔾2 - CC compiler":
   runBench("bench_ec_msm_bls12_381_g2")
 
 task bench_ec_msm_bandersnatch, "Run benchmark: Multi-Scalar-Mul for Bandersnatch - CC compiler":
   runBench("bench_ec_msm_bandersnatch")
 
+task bench_ec_msm_precomp_bandersnatch, "Run benchmark: Precomp Multi-Scalar-Mul for Bandersnatch - CC compiler":
+  runBench("bench_ec_msm_precomp_bandersnatch")
 
 # Elliptic curve 𝔾₂
 # ------------------------------------------
@@ -1171,10 +1220,36 @@ task bench_hash_to_curve, "Run Hash-to-Curve benchmarks":
 task bench_eth_bls_signatures, "Run Ethereum BLS signatures benchmarks - CC compiler":
   runBench("bench_eth_bls_signatures")
 
+
 # EIP 4844 - KZG Polynomial Commitments
 # ------------------------------------------
 task bench_eth_eip4844_kzg, "Run Ethereum EIP4844 KZG Polynomial commitment - CC compiler":
   runBench("bench_eth_eip4844_kzg")
+
+task bench_eth_eip7594_peerdas, "Run Ethereum EIP7594 PeerDAS (Data Availability Sampling) - CC compiler":
+  runBench("bench_eth_eip7594_peerdas")
+
+task bench_kzg_multiproofs, "Run KZG Multiproof benchmarks (FK20 vs Naive) - CC compiler":
+  runBench("bench_kzg_multiproofs")
+
+task bench_matrix_toeplitz, "Run Toeplitz matrix benchmarks (FK20 accumulation, 64 accumulates) - CC compiler":
+  runBench("bench_matrix_toeplitz")
+# EIP7594 PeerDAS - Individual perf benchmarks (for VTune/perf profiling)
+# ------------------------------------------
+task bench_eth_eip7594_generate_benchset, "Generate PeerDAS benchset.dat for perf benchmarks - CC compiler":
+  runBench("eth_eip7594/benchset_generation")
+
+task bench_eth_eip7594_perf_compute_cells, "Run PeerDAS compute_cells benchmark (serialized data) - CC compiler":
+  runBench("eth_eip7594/perf_compute_cells")
+
+task bench_eth_eip7594_perf_compute_cells_and_kzg_proofs, "Run PeerDAS compute_cells_and_kzg_proofs benchmark (FK20, serialized data) - CC compiler":
+  runBench("eth_eip7594/perf_compute_cells_and_kzg_proofs")
+
+task bench_eth_eip7594_perf_recover_cells_and_kzg_proofs, "Run PeerDAS recover_cells_and_kzg_proofs benchmark (serialized data) - CC compiler":
+  runBench("eth_eip7594/perf_recover_cells_and_kzg_proofs")
+
+task bench_eth_eip7594_perf_verify_cell_kzg_proof_batch, "Run PeerDAS verify_cell_kzg_proof_batch benchmark (64 blobs, serialized data) - CC compiler":
+  runBench("eth_eip7594/perf_verify_cell_kzg_proof_batch")
 
 task bench_verkle, "Run benchmarks for Banderwagon":
   runBench("bench_verkle_primitives")
@@ -1188,3 +1263,14 @@ task bench_eth_eip2537_subgroup_checks_impact, "Run EIP2537 subgroup checks impa
 # ------------------------------------------
 task bench_eth_evm_precompiles, "Run Ethereum EVM precompiles - CC compiler":
   runBench("bench_eth_evm_precompiles")
+
+# FFT
+# ------------------------------------------
+task bench_fft_fields, "Run FFT / IFFT Benchmarks on Fields (BLS12-381) - CC compiler":
+  runBench("bench_fft_fields")
+
+task bench_fft_ec, "Run FFT / IFFT Benchmarks on Elliptic Curves (BLS12-381 G1) - CC compiler":
+  runBench("bench_fft_ec")
+
+task bench_fft_bit_reversal, "Run Bit-Reversal Permutation Benchmarks - CC compiler":
+  runBench("bench_fft_bit_reversal")

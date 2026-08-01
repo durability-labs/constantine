@@ -22,12 +22,12 @@ import
   ./hash_to_curve/hash_to_curve,
   # For KZG point precompile
   ./ethereum_eip4844_kzg,
-  ./serialization/codecs_status_codes,
   # ECDSA for ECRecover
   ./ethereum_ecdsa_signatures
 
 # For KZG point precompile
-export EthereumKZGContext, TrustedSetupFormat, TrustedSetupStatus, trusted_setup_load, trusted_setup_delete
+export EthereumKZGContext, TrustedSetupFormat, TrustedSetupStatus,
+  new, new_with_precompute, delete
 
 # Technically not a precompile but reexport hashes
 # They include Keccak, SHA256 and RipeMD160
