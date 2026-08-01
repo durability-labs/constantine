@@ -39,10 +39,7 @@ when UseASM_X86_64:
 when UseASM_ARM64:
   import ./assembly/limbs_asm_modular_arm64
 
-when nimvm:
-  from constantine/named/deriv/precompute import montyResidue_precompute
-else:
-  discard
+from constantine/named/deriv/precompute import montyResidue_precompute
 
 export Fp, Fr, FF
 
@@ -365,7 +362,7 @@ func div2*(a: var FF) {.meter.} =
   #   a/2       < M if a is even
   debug: doAssert not carry.bool
 
-func inv*(r: var FF, a: FF) =
+func inv*(r: var FF, a: FF) {.meter.} =
   ## Inversion modulo p
   ##
   ## The inverse of 0 is 0.
@@ -386,7 +383,7 @@ func inv*(a: var FF) =
   ## to affine for elliptic curve
   a.inv(a)
 
-func inv_vartime*(r: var FF, a: FF) {.tags: [VarTime].} =
+func inv_vartime*(r: var FF, a: FF) {.meter, tags: [VarTime].} =
   ## Variable-time Inversion modulo p
   ##
   ## The inverse of 0 is 0.
@@ -415,22 +412,22 @@ func inv_vartime*(a: var FF) {.tags: [VarTime].} =
 #
 # This implements extra primitives for ergonomics.
 
-func `*=`*(a: var FF, b: FF) {.meter.} =
+func `*=`*(a: var FF, b: FF) =
   ## Multiplication modulo p
   a.prod(a, b)
 
-func square*(a: var FF, lazyReduce: static bool = false) {.meter.} =
+func square*(a: var FF, lazyReduce: static bool = false) =
   ## Squaring modulo p
   a.square(a, lazyReduce)
 
-func square_repeated*(a: var FF, num: int, lazyReduce: static bool = false) {.meter.} =
+func square_repeated*(a: var FF, num: int, lazyReduce: static bool = false) =
   ## Repeated squarings
   ## Assumes at least 1 squaring
   for _ in 0 ..< num-1:
     a.square(lazyReduce = true)
   a.square(lazyReduce)
 
-func square_repeated*(r: var FF, a: FF, num: int, lazyReduce: static bool = false) {.meter.} =
+func square_repeated*(r: var FF, a: FF, num: int, lazyReduce: static bool = false) =
   ## Repeated squarings
   r.square(a, lazyReduce = true)
   for _ in 1 ..< num-1:
@@ -616,7 +613,7 @@ func pow*(r: var FF, a: FF, exponent: BigInt or openArray[byte] or FF) =
   ## ``a``: a field element to be exponentiated
   ## ``exponent``: a finite field element or big integer
   r = a
-  a.pow(exponent)
+  r.pow(exponent)
 
 # Vartime exponentiation
 # -------------------------------------------------------------------
@@ -690,7 +687,7 @@ func pow_vartime*(r: var FF, a: FF, exponent: BigInt or openArray[byte] or FF) =
   ## ``a``: a field element to be exponentiated
   ## ``exponent``: a finite field element or big integer
   r = a
-  a.pow_vartime(exponent)
+  r.pow_vartime(exponent)
 
 # Small vartime exponentiation
 # -------------------------------------------------------------------
@@ -841,20 +838,31 @@ func computeSparsePowers_vartime*[Name](
     dst[i] = dst[i-1]
     dst[i].pow_vartime(sparsePowers[i]-sparsePowers[i-1])
 
-func computePowers*[Name](dst: ptr UncheckedArray[FF[Name]], base: FF[Name], len: int) =
+func computePowers*[Name](dst: ptr UncheckedArray[FF[Name]], base: FF[Name], len: int, skipOne: static bool = false) =
   ## We need linearly independent random numbers
   ## for batch proof sampling.
   ## Powers are linearly independent.
   ## It's also likely faster than calling a fast RNG + modular reduction
   ## to be in 0 < number < curve_order
   ## since modular reduction needs modular multiplication or a division anyway.
+  ##
+  ## When `skipOne = false` (default): dst = [1, base, base², ..., baseᴺ⁻¹]
+  ## When `skipOne = true`:            dst = [base, base², ..., baseᴺ]
+  ## Use `skipOne = true` for blinding, where r⁰ == 1 must be avoided.
   let N = len
-  if N >= 1:
-    dst[0].setOne()
-  if N >= 2:
-    dst[1] = base
-  for i in 2 ..< N:
-    dst[i].prod(dst[i-1], base)
+
+  when skipOne:
+    if N >= 1:
+      dst[0] = base
+    for i in 1 ..< N:
+      dst[i].prod(dst[i-1], base)
+  else:
+    if N >= 1:
+      dst[0].setOne()
+    if N >= 2:
+      dst[1] = base
+    for i in 2 ..< N:
+      dst[i].prod(dst[i-1], base)
 
 # ############################################################
 #
@@ -1067,3 +1075,11 @@ func `~^`*(a: FF, b: FF or BigInt or openArray[byte]): FF {.noInit, inline.} =
   ## and our types might be large (Fp12 ...)
   ## See: https://github.com/mratsim/constantine/issues/145
   result.pow_vartime(a, b)
+
+func `~^`*(a: FF, b: SomeUnsignedInt): FF {.noInit, inline.} =
+  ## Finite Field vartime exponentiation with small unsigned integer exponent
+  ##
+  ## Uses addition chains for exponents ≤ 16, otherwise square-and-multiply.
+  ## Out-of-place functions SHOULD NOT be used in performance-critical subroutines.
+  result = a
+  result.pow_vartime(b)

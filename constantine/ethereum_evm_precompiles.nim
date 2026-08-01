@@ -22,12 +22,12 @@ import
   ./hash_to_curve/hash_to_curve,
   # For KZG point precompile
   ./ethereum_eip4844_kzg,
-  ./serialization/codecs_status_codes,
   # ECDSA for ECRecover
   ./ethereum_ecdsa_signatures
 
 # For KZG point precompile
-export EthereumKZGContext, TrustedSetupFormat, TrustedSetupStatus, trusted_setup_load, trusted_setup_delete
+export EthereumKZGContext, TrustedSetupFormat, TrustedSetupStatus,
+  new, new_with_precompute, delete
 
 # Technically not a precompile but reexport hashes
 # They include Keccak, SHA256 and RipeMD160
@@ -277,7 +277,7 @@ proc parseEip2537(dst: var Fp[BLS12_381], src: openArray[byte]): CttEvmStatus {.
 
   # Now check that all lower bytes are empty
   var allZero = success # if `success` already false we still continue
-  for i in 0 ..< 15: # order irrelevant
+  for i in 0 ..< 16: # order irrelevant
     allZero = allZero and (src[i] == 0)
 
   if not allZero or not bool(big < Fp[BLS12_381].getModulus()):
@@ -1061,7 +1061,6 @@ func eth_evm_bls12381_g2msm*(r: var openArray[byte], inputs: openarray[byte]): C
   freeHeapAligned(points)
   freeHeapAligned(coefs_big)
 
-
 func eth_evm_bls12381_pairingcheck*(r: var openArray[byte], inputs: openarray[byte]): CttEVMStatus {.libPrefix: prefix_ffi, meter.} =
   ## Elliptic curve pairing check on BLS12-381
   ##
@@ -1098,7 +1097,6 @@ func eth_evm_bls12381_pairingcheck*(r: var openArray[byte], inputs: openarray[by
 
   var acc {.noInit.}: MillerAccumulator[Fp[BLS12_381], Fp2[BLS12_381], Fp12[BLS12_381]]
   acc.init()
-  var foundInfinity = false
 
   for i in 0 ..< N:
     let pos = i*384
@@ -1123,14 +1121,8 @@ func eth_evm_bls12381_pairingcheck*(r: var openArray[byte], inputs: openarray[by
     if statusQ != cttEVM_Success:
       return statusQ
 
-    let regular = acc.update(P, Q)
-    if not regular:
-      foundInfinity = true
-
-  if foundInfinity: # pairing with infinity returns 1, hence no need to compute the following
-    zeroMem(r[0].addr, r.len-1)
-    r[r.len-1] = byte 1
-    return cttEVM_Success
+    # acc.update skips the update if P or Q are infinity point.
+    discard acc.update(P, Q)
 
   var gt {.noinit.}: Fp12[BLS12_381]
   acc.finish(gt)

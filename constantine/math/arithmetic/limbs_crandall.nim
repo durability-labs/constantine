@@ -95,11 +95,18 @@ func reduceCrandallPartial_impl[N: static int](
   #                       ≡ hi*cs (mod p)
 
   # Move all extra bits to hi, i.e. double-word shift
-  hi = (hi shl S) or (r[N-1] shr (WordBitWidth-S))
+  when S == 0:
+    # Special case for m = N*WordBitWidth like in Secp256k1
+    # No shift is needed, hi remains as is
+    # Otherwhise the expression (hi << 0) or (r[N-1) >> 64)
+    # may be undefined depending on the CPU ISA (shift by 0 or wordsize)
+    discard
+  else:
+    hi = (hi shl S) or (r[N-1] shr (WordBitWidth-S))
 
-  # High-bits have been "carried" to `hi`, cancel them in r[N-1].
-  # Note: there might be up to `c` not reduced.
-  r[N-1] = r[N-1] and (MaxWord shr S)
+    # High-bits have been "carried" to `hi`, cancel them in r[N-1].
+    # Note: there might be up to `c` not reduced.
+    r[N-1] = r[N-1] and (MaxWord shr S)
 
   # Partially reduce to up to `m` bits
   # We need to fold what's beyond `m` bits
@@ -169,7 +176,7 @@ func reduceCrandallFinal_impl[N: static int](
 
 func reduceCrandallFinal[N: static int](
         a: var Limbs[N],
-        p: Limbs[N]) {.inline.} =
+        p: Limbs[N]) {.inline, used.} =
   ## Final Reduction modulo p
   ## with p with special form 2ᵐ-c
   ## called "Crandall prime" or Pseudo-Mersenne Prime in the litterature
@@ -285,7 +292,7 @@ func squareCran*[N: static int](
 template checkPowScratchSpaceLen(len: int) =
   ## Checks that there is a minimum of scratchspace to hold the temporaries
   debug:
-    assert len >= 2, "Internal Error: the scratchspace for powmod should be equal or greater than 2"
+    assert len >= 2, "[ctt] Internal error: the scratchspace for powmod should be equal or greater than 2"
 
 func getWindowLen(bufLen: int): uint =
   ## Compute the maximum window size that fits in the scratchspace buffer

@@ -215,7 +215,9 @@ func `<`(a, b: BigInt): bool =
 func shiftRight*(a: var BigInt, k: int) =
   ## Shift right by k.
   ##
-  ## k MUST be less than the base word size (2^32 or 2^64)
+  ## Precondition:
+  ## - On 32-bit platforms, k MUST be 0 < k < 32
+  ## - On 64-bit platforms, k MUST be 0 < k < 64
 
   for i in 0 ..< a.limbs.len-1:
     a.limbs[i] = (a.limbs[i] shr k) or (a.limbs[i+1] shl (WordBitWidth - k))
@@ -228,7 +230,7 @@ func shiftRight*(a: var BigInt, k: int) =
 # ############################################################
 
 func checkOdd(a: BaseType) =
-  doAssert bool(a and 1), "Internal Error: the modulus must be odd to use the Montgomery representation."
+  doAssert bool(a and 1), "[ctt] Internal error: the modulus must be odd to use the Montgomery representation."
 
 func checkOdd(M: BigInt) =
   checkOdd(BaseType M.limbs[0])
@@ -239,7 +241,7 @@ func checkValidModulus(M: BigInt) =
 
   # This is important for the constant-time explicit modulo operation
   # "reduce" and bigint division.
-  doAssert msb == expectedMsb, "Internal Error: the modulus must use all declared bits and only those:\n" &
+  doAssert msb == expectedMsb, "[ctt] Internal error: the modulus must use all declared bits and only those:\n" &
     "    Modulus '" & M.toHex() & "' is declared with " & $M.bits &
     " bits but uses " & $(msb + WordBitWidth * (M.limbs.len - 1)) & " bits."
 

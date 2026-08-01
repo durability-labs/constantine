@@ -67,91 +67,214 @@ func scalarMul_doubleAdd_vartime*[EC](P: var EC, scalar: BigInt) {.tags:[VarTime
         else:
           P ~+= Paff
 
-func scalarMul_addchain_4bit_vartime[EC](P: var EC, scalar: BigInt) {.tags:[VarTime], meter.} =
+func scalarMul_addchain_5bit_vartime[EC](P: var EC, scalar: BigInt) {.tags:[VarTime], meter.} =
   ## **Variable-time** Elliptic Curve Scalar Multiplication
-  ## This can only handle for small scalars up to 2⁴ = 16 excluded
+  ## This only handles small scalars up to 2⁵ = 32 excluded
   let s = uint scalar.limbs[0]
-
   case s
   of 0:
-    P.setNeutral()
+    P.setNeutral()                                     # P = [0]
   of 1:
-    discard
+    discard                                            # P = [1]P
   of 2:
-    P.double()
+    P.double()                                         # P = [2]P
   of 3:
     var t {.noInit.}: EC
-    t.double(P)
-    P ~+= t
+    t.double(P)                                        # t = [2]P
+    P ~+= t                                            # P = [1]P + [2]P = [3]P
   of 4:
-    P.double()
-    P.double()
+    P.double()                                         # P = [2]P
+    P.double()                                         # P = [4]P
   of 5:
     var t {.noInit.}: EC
-    t.double(P)
-    t.double()
-    P ~+= t
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    P ~+= t                                            # P = [1]P + [4]P = [5]P
   of 6:
     var t {.noInit.}: EC
-    t.double(P)
-    P ~+= t
-    P.double()
+    t.double(P)                                        # t = [2]P
+    P ~+= t                                            # P = [1]P + [2]P = [3]P
+    P.double()                                         # P = [6]P
   of 7:
     var t {.noInit.}: EC
-    t.double(P)
-    t.double()
-    t.double()
-    P.diff_vartime(t, P)
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    P.diff_vartime(t, P)                               # P = [8]P - [1]P = [7]P
   of 8:
-    P.double()
-    P.double()
-    P.double()
+    P.double()                                         # P = [2]P
+    P.double()                                         # P = [4]P
+    P.double()                                         # P = [8]P
   of 9:
     var t {.noInit.}: EC
-    t.double(P)
-    t.double()
-    t.double()
-    P ~+= t
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    P ~+= t                                            # P = [1]P + [8]P = [9]P
   of 10:
     var t {.noInit.}: EC
-    t.double(P)
-    t.double()
-    P ~+= t
-    P.double()
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    P ~+= t                                            # P = [1]P + [4]P = [5]P
+    P.double()                                         # P = [10]P
   of 11:
     var t1 {.noInit.}, t2 {.noInit.}: EC
-    t1.double(P)  # [2]P
-    t2.double(t1)
-    t2.double()   # [8]P
-    t1 ~+= t2
-    P ~+= t1
+    t1.double(P)                                       # t1 = [2]P
+    t2.double(t1)                                      # t2 = [4]P
+    t2.double()                                        # t2 = [8]P
+    t1 ~+= t2                                          # t1 = [2]P + [8]P = [10]P
+    P ~+= t1                                           # P = [1]P + [10]P = [11]P
   of 12:
-    var t1 {.noInit.}, t2 {.noInit.}: EC
-    t1.double(P)
-    t1.double()   # [4]P
-    t2.double(t1) # [8]P
-    P.sum_vartime(t1, t2)
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    P.double(t)                                        # P = [8]P
+    P ~+= t                                            # P = [4]P + [8]P = [12]P
   of 13:
     var t1 {.noInit.}, t2 {.noInit.}: EC
-    t1.double(P)
-    t1.double()   # [4]P
-    t2.double(t1) # [8]P
-    t1 ~+= t2
-    P ~+= t1
+    t1.double(P)                                       # t1 = [2]P
+    t1.double()                                        # t1 = [4]P
+    t2.double(t1)                                      # t2 = [8]P
+    t1 ~+= t2                                          # t1 = [4]P + [8]P = [12]P
+    P ~+= t1                                           # P = [1]P + [12]P = [13]P
   of 14:
     var t {.noInit.}: EC
-    t.double(P)
-    t.double()
-    t.double()
-    t ~-= P # [7]P
-    P.double(t)
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t ~-= P                                            # t = [8]P - [1]P = [7]P
+    P.double(t)                                        # P = [14]P
   of 15:
     var t {.noInit.}: EC
-    t.double(P)
-    t.double()
-    t.double()
-    t.double()
-    P.diff_vartime(t, P)
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t.double()                                         # t = [16]P
+    P.diff_vartime(t, P)                               # P = [16]P - [1]P = [15]P
+  of 16:
+    P.double()                                         # P = [2]P
+    P.double()                                         # P = [4]P
+    P.double()                                         # P = [8]P
+    P.double()                                         # P = [16]P
+
+  # --- 17 to 32 ---
+  of 17:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t.double()                                         # t = [16]P
+    P ~+= t                                            # P = [1]P + [16]P = [17]P
+  of 18:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t ~+= P                                            # t = [1]P + [8]P = [9]P
+    P.double(t)                                        # P = 2 * [9]P = [18]P
+  of 19:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t ~+= P                                            # t = [1]P + [8]P = [9]P
+    t.double()                                         # t = 2 * [9]P = [18]P
+    P ~+= t                                            # P = [18]P + [1]P = [19]P
+  of 20:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t ~+= P                                            # t = [1]P + [4]P = [5]P
+    t.double()                                         # t = [10]P
+    P.double(t)                                        # P = 2 * [10]P = [20]P
+  of 21:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t ~+= P                                            # t = [1]P + [4]P = [5]P
+    t.double()                                         # t = [10]P
+    t.double()                                         # t = [20]P
+    P ~+= t                                            # P = [1]P + [20]P = [21]P
+  of 22:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t ~+= P                                            # t = [1]P + [4]P = [5]P
+    t.double()                                         # t = [10]P
+    t ~+= P                                            # t = [10]P + [1]P = [11]P
+    P.double(t)                                        # P = 2 * [11]P = [22]P
+  of 23:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t ~+= P                                            # t = [1]P + [2]P = [3]P
+    t.double()                                         # t = [6]P
+    t.double()                                         # t = [12]P
+    t.double()                                         # t = 2 * [12]P = [24]P
+    P.diff_vartime(t, P)                               # P = [24]P - [1]P = [23]P
+  of 24:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t ~+= P                                            # t = [1]P + [2]P = [3]P
+    t.double()                                         # t = [6]P
+    t.double()                                         # t = [12]P
+    P.double(t)                                        # P = 2 * [12]P = [24]P
+  of 25:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t ~+= P                                            # t = [1]P + [2]P = [3]P
+    t.double()                                         # t = [6]P
+    t.double()                                         # t = [12]P
+    t.double()                                         # t = [24]P
+    P ~+= t                                            # P = [1]P + [24]P = [25]P
+  of 26:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t ~+= P                                            # t = [1]P + [2]P = [3]P
+    t.double()                                         # t = [6]P
+    t.double()                                         # t = [12]P
+    t ~+= P                                            # t = [12]P + [1]P = [13]P
+    P.double(t)                                        # P = 2 * [13]P = [26]P
+  of 27:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t ~+= P                                            # t = [1]P + [8]P = [9]P
+    P.double(t)                                        # P = 2 * [9]P = [18]P
+    P ~+= t                                            # P = [18]P + [9]P = [27]P
+  of 28:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t ~-= P                                            # t = [8]P - [1]P = [7]P
+    t.double()                                         # t = [14]P
+    P.double(t)                                        # P = 2 * [14]P = [28]P
+  of 29:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t ~-= P                                            # t = [8]P - [1]P = [7]P
+    t.double()                                         # t = [14]P
+    t.double()                                         # t = [28]P
+    P ~+= t                                            # P = [1]P + [28]P = [29]P
+  of 30:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    P.double(t)                                        # P = [4]P
+    P.double()                                         # P = [8]P
+    P.double()                                         # P = [16]P
+    P.double()                                         # P = [32]P
+    P ~-= t                                            # P = [32]P - [2]P = [30]P
+  of 31:
+    var t {.noInit.}: EC
+    t.double(P)                                        # t = [2]P
+    t.double()                                         # t = [4]P
+    t.double()                                         # t = [8]P
+    t.double()                                         # t = [16]P
+    t.double()                                         # t = [32]P
+    P.diff_vartime(t, P)                               # P = [32]P - [1]P = [31]P
   else:
     unreachable()
 
@@ -161,23 +284,36 @@ func scalarMul_jy00_vartime*[EC](P: var EC, scalar: BigInt) {.tags:[VarTime].}  
   ##   P <- [k] P
   ##
   ## This uses an online recoding with minimum Hamming Weight
-  ## bassed on Joye, Yen, 2000 recoding.
+  ## based on Joye, Yen, 2000 recoding.
   ##
   ## ⚠️ While the recoding is constant-time,
   ##   usage of this recoding is intended vartime
   ##   This MUST NOT be used with secret data.
   ##
   ## This is highly VULNERABLE to timing attacks and power analysis attacks
-  var Paff {.noinit.}: affine(EC)
-  Paff.affine(P)
+  var paff {.noinit.}: affine(EC)
+  paff.affine(P)
+
+  var npaff {.noinit.}: affine(EC)
+  npaff.neg(paff)
 
   P.setNeutral()
+  var init = false
   for bit in recoding_l2r_signed_vartime(scalar):
-    P.double()
+    if init:
+      P.double()
     if bit == 1:
-      P ~+= Paff
+      if not init:
+        P.fromAffine(paff)
+        init = true
+      else:
+        P ~+= paff
     elif bit == -1:
-      P ~-= Paff
+      if not init:
+        P.fromAffine(npaff)
+        init = true
+      else:
+        P ~+= npaff
 
 # Non-Adjacent Form (NAF) recoding
 # ------------------------------------------------------------
@@ -212,7 +348,7 @@ func accumNAF[precompSize, NafMax: static int, EC, ECaff](
     elif digit < 0:
       P ~-= tab[-digit shr 1]
 
-func scalarMul_wNAF_vartime*[EC](P: var EC, scalar: BigInt, window: static int) {.tags:[VarTime, Alloca], meter.} =
+func scalarMul_wNAF_vartime*[EC](P: var EC, scalar: BigInt, window: static int) {.tags:[VarTime], meter.} =
   ## **Variable-time** Elliptic Curve Scalar Multiplication
   ##
   ##   P <- [k] P
@@ -236,7 +372,7 @@ func scalarMul_wNAF_vartime*[EC](P: var EC, scalar: BigInt, window: static int) 
     tabEC[i].sum_vartime(tabEC[i-1], P2)
 
   var tab {.noinit.}: array[precompSize, affine(EC)]
-  tab.batchAffine(tabEC)
+  tab.batchAffine_vartime(tabEC)
 
   var naf {.noInit.}: array[BigInt.bits+1, int8]
   let nafLen = naf.recode_r2l_signed_window_vartime(scalar, window)
@@ -252,7 +388,7 @@ func scalarMul_wNAF_vartime*[EC](P: var EC, scalar: BigInt, window: static int) 
 func scalarMulEndo_wNAF_vartime*[scalBits: static int; EC](
        P: var EC,
        scalar: BigInt[scalBits],
-       window: static int) {.tags:[VarTime, Alloca], meter.} =
+       window: static int) {.tags:[VarTime], meter.} =
   ## Endomorphism-accelerated windowed vartime scalar multiplication
   ##
   ##   P <- [k] P
@@ -304,7 +440,7 @@ func scalarMulEndo_wNAF_vartime*[scalBits: static int; EC](
       tabEC[m][i].sum_vartime(tabEC[m][i-1], P2)
 
   var tab {.noinit.}: array[M, array[precompSize, affine(EC)]]
-  tab.batchAffine(tabEC)
+  tab.batchAffine_vartime(tabEC)
 
   # 5. wNAF precomputed tables
   const NafLen = L+1
@@ -351,13 +487,6 @@ func scalarMul_vartime*[scalBits; EC](P: var EC, scalar: BigInt[scalBits]) {.met
   ## - 0 <= scalar < curve order
   ## Those conditions will be assumed.
 
-  when P.F is Fp:
-    const M = 2
-  elif P.F is Fp2:
-    const M = 4
-  else:
-    {.error: "Unconfigured".}
-
   let usedBits = scalar.limbs.getBits_LE_vartime()
 
   when EC.getName().hasEndomorphismAcceleration():
@@ -371,16 +500,16 @@ func scalarMul_vartime*[scalBits; EC](P: var EC, scalar: BigInt[scalBits]) {.met
           {.error: "Unreachable".}
         return
 
-  if 64 < usedBits:
+  if usedBits > 64:
     # With a window of 4, we precompute 2^4 = 4 points
     P.scalarMul_wNAF_vartime(scalar, window = 4)
-  elif 16 < usedBits:
+  elif usedBits >= 8:
     # With a window of 3, we precompute 2^1 = 2 points
     P.scalarMul_wNAF_vartime(scalar, window = 3)
-  elif 4 < usedBits:
-    P.scalarMul_jy00_vartime(scalar)
-  else:
-    P.scalarMul_addchain_4bit_vartime(scalar)
+  elif usedBits > 5:
+    P.scalarMul_doubleAdd_vartime(scalar)
+  else: # 5-bit: [0, 32)
+    P.scalarMul_addchain_5bit_vartime(scalar)
 
 func scalarMul_vartime*[EC](P: var EC, scalar: Fr) {.inline.} =
   ## Elliptic Curve Scalar Multiplication

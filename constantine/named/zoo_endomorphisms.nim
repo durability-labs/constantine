@@ -9,7 +9,7 @@
 import
   std/macros,
   constantine/platforms/abstractions,
-  constantine/math/extension_fields,
+  constantine/math/[arithmetic, extension_fields],
   constantine/math/endomorphisms/frobenius,
   constantine/math/elliptic/[
     ec_shortweierstrass_affine,
@@ -121,7 +121,7 @@ func hasEndomorphismAcceleration*(Name: static Algebra): bool {.compileTime.} =
     Vesta
   }
 
-const EndomorphismThreshold* = 192
+const EndomorphismThreshold* = 152
   ## We use substraction by maximum infinity norm coefficient
   ## to split scalars for endomorphisms
   ##

@@ -15,6 +15,7 @@
 #include "constantine/core/threadpool.h"
 
 // Hash functions
+#include "constantine/hashes/keccak256.h"
 #include "constantine/hashes/sha256.h"
 
 // Cryptographically Secure Random Number Generators
@@ -39,6 +40,7 @@
 #include "constantine/protocols/ethereum_bls_signatures_parallel.h"
 #include "constantine/protocols/ethereum_eip4844_kzg.h"
 #include "constantine/protocols/ethereum_eip4844_kzg_parallel.h"
+#include "constantine/protocols/ethereum_eip7594_peerdas.h"
 
 #include "constantine/protocols/ethereum_evm_precompiles.h"
 
